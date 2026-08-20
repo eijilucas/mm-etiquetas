@@ -1,0 +1,29 @@
+-- Supersedes the `current_setting('app.settings.*')` approach from
+-- 0002_pg_cron.sql: on this project the SQL editor's role gets
+-- "permission denied to set parameter" on `alter database ... set
+-- app.settings.*` (Supabase's managed postgres role isn't a true superuser
+-- on current Postgres versions, so custom GUCs via ALTER DATABASE are
+-- blocked). cron.schedule itself IS grantable, so the fix is to bake the
+-- url/secret directly into the job body instead of reading them from GUCs.
+--
+-- This migration only re-registers the job shape; it does NOT carry the
+-- real values (never commit CRON_SECRET to a tracked file). After this
+-- runs, re-run the job registration once by hand in the SQL editor with the
+-- real project URL and the real CRON_SECRET value (same one as the
+-- CRON_SECRET Edge Function secret) — see README.md, section
+-- "Passo manual obrigatorio pos-deploy":
+--
+--   select cron.unschedule('reconciliation-every-15-minutes');
+--   select cron.schedule(
+--     'reconciliation-every-15-minutes',
+--     '*/15 * * * *',
+--     $job$
+--     select net.http_post(
+--       url := 'https://<project-ref>.supabase.co/functions/v1/reconciliation-cron',
+--       headers := jsonb_build_object('Content-Type', 'application/json', 'x-cron-secret', '<CRON_SECRET>'),
+--       body := '{}'::jsonb
+--     );
+--     $job$
+--   );
+select cron.unschedule('reconciliation-every-15-minutes')
+where exists (select 1 from cron.job where jobname = 'reconciliation-every-15-minutes');

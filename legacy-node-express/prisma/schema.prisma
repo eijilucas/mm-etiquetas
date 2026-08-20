@@ -1,0 +1,76 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Status lifecycle: pending_approval -> approved -> cart_created -> purchased
+// -> label_generated -> tracking_synced (done). "held" and "failed" are side
+// branches; held only leaves via explicit manual revert, failed via reprocess.
+enum ShippingStatus {
+  pending_approval
+  approved
+  cart_created
+  purchased
+  label_generated
+  tracking_synced
+  held
+  failed
+}
+
+model OrderShipping {
+  id String @id @default(cuid())
+
+  storeKey           String
+  shopifyOrderId     String
+  shopifyOrderNumber String?
+  shopifyGraphqlId   String?
+
+  financialStatus   String
+  fulfillmentStatus String?
+
+  customerName  String?
+  customerEmail String?
+  currency      String  @default("BRL")
+  totalPrice    Decimal @db.Decimal(12, 2)
+  paidAt        DateTime?
+
+  // Line items snapshot: [{ shopifyLineItemId, title, sku, quantity, unitPrice, grams }]
+  items Json
+  // Shopify shipping address snapshot (name, address1/2, city, province_code, zip, country_code, phone)
+  shippingAddress Json
+
+  status     ShippingStatus @default(pending_approval)
+  lastError  String?
+
+  approvedBy String?
+  approvedAt DateTime?
+
+  heldReason String?
+  heldBy     String?
+  heldAt     DateTime?
+
+  melhorEnvioCartId       String?
+  melhorEnvioOrderId      String?
+  melhorEnvioLabelId      String?
+  melhorEnvioProtocol     String?
+  trackingCode            String?
+  trackingCompany         String? @default("Melhor Envio")
+  labelPdfUrl             String?
+
+  shopifyFulfillmentId String?
+
+  webhookEventId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([storeKey, shopifyOrderId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([storeKey])
+  @@map("orders_shipping")
+}

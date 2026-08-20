@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MM Etiquetas</title>
+  <link rel="stylesheet" href="/functions/v1/panel/style.css" />
+</head>
+<body>
+  <nav class="navbar">
+    <div class="brand">
+      <img src="/functions/v1/panel/logo.png" alt="logo" />
+      <span class="wordmark">MM Etiquetas</span>
+      <span class="tag">Orquestrador de Frete</span>
+    </div>
+    <div class="token-status">
+      <span id="tokenStatus">token nao configurado</span>
+      <button class="btn" id="setTokenBtn">Configurar token</button>
+    </div>
+  </nav>
+
+  <main>
+    <div class="kpi-row">
+      <div class="kpi">
+        <div class="kpi-label">Pendentes de aprovacao</div>
+        <div class="kpi-value" id="kpiPending">-</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Em processamento</div>
+        <div class="kpi-value" id="kpiProcessing">-</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Concluidos</div>
+        <div class="kpi-value" id="kpiCompleted">-</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Falhas</div>
+        <div class="kpi-value" id="kpiFailed">-</div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="pending">Fila de aprovacao</button>
+      <button class="tab-btn" data-tab="processing">Em processamento / Concluidos</button>
+      <button class="tab-btn" data-tab="held">Em espera (held)</button>
+    </div>
+
+    <section class="tab-panel active" id="tab-pending">
+      <div class="card">
+        <div class="store-filter" id="pendingStoreFilter"></div>
+        <div class="toolbar">
+          <button class="btn" id="selectAllBtn">Selecionar todos</button>
+          <button class="btn" id="approveBtn" disabled>Emitir etiquetas selecionadas</button>
+          <button class="btn danger" id="holdBtn" disabled>Segurar</button>
+          <button class="btn" id="refreshPendingBtn">Atualizar</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th></th>
+              <th>Pedido</th>
+              <th>Loja</th>
+              <th>Cliente</th>
+              <th>Itens</th>
+              <th>Valor</th>
+              <th>Pago em</th>
+            </tr>
+          </thead>
+          <tbody id="pendingTableBody"></tbody>
+        </table>
+        <div class="empty-state" id="pendingEmpty" style="display:none;">Nenhum pedido pendente de aprovacao.</div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-processing">
+      <div class="card">
+        <div class="toolbar">
+          <button class="btn" id="refreshProcessingBtn">Atualizar</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Pedido</th>
+              <th>Loja</th>
+              <th>Cliente</th>
+              <th>Status</th>
+              <th>Rastreio</th>
+              <th>Ultimo erro</th>
+              <th>Atualizado em</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="processingTableBody"></tbody>
+        </table>
+        <div class="empty-state" id="processingEmpty" style="display:none;">Nenhum pedido em processamento.</div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-held">
+      <div class="card">
+        <div class="toolbar">
+          <button class="btn" id="refreshHeldBtn">Atualizar</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Pedido</th>
+              <th>Loja</th>
+              <th>Cliente</th>
+              <th>Motivo</th>
+              <th>Em espera desde</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="heldTableBody"></tbody>
+        </table>
+        <div class="empty-state" id="heldEmpty" style="display:none;">Nenhum pedido em espera.</div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="holdDialog">
+    <label for="holdReasonInput">Motivo para nao emitir</label>
+    <textarea id="holdReasonInput" rows="3" placeholder="Ex: sem estoque fisico"></textarea>
+    <div class="dialog-actions">
+      <button class="btn" id="holdCancelBtn">Cancelar</button>
+      <button class="btn danger" id="holdConfirmBtn">Confirmar</button>
+    </div>
+  </dialog>
+
+  <dialog id="tokenDialog">
+    <label for="tokenInput">Internal API Token</label>
+    <input id="tokenInput" type="password" placeholder="Bearer token" />
+    <div class="dialog-actions">
+      <button class="btn" id="tokenCancelBtn">Cancelar</button>
+      <button class="btn" id="tokenConfirmBtn">Salvar</button>
+    </div>
+  </dialog>
+
+  <script src="/functions/v1/panel/app.js"></script>
+</body>
+</html>

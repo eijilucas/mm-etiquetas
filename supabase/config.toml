@@ -1,0 +1,33 @@
+project_id = "mm-etiquetas"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 15
+
+[studio]
+enabled = true
+port = 54323
+
+# shopify-webhook verifies the Shopify HMAC signature and reconciliation-cron
+# checks CRON_SECRET (set via pg_cron, see supabase/migrations/0002_pg_cron.sql)
+# — neither is a browser session, so both disable Supabase's own JWT check.
+# panel just serves static files, no auth needed there either. orders-api is
+# the one function real users hit, so it uses actual Supabase Auth (email +
+# password) instead of a shared token — see getAuthenticatedUser in auth.ts.
+[functions.shopify-webhook]
+verify_jwt = false
+
+[functions.orders-api]
+verify_jwt = true
+
+[functions.panel]
+verify_jwt = false
+
+[functions.reconciliation-cron]
+verify_jwt = false
