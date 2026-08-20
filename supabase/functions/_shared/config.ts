@@ -133,6 +133,15 @@ export function loadConfig() {
       webhookUrl: optional("ALERT_WEBHOOK_URL"),
       stuckHours: Number(optional("ALERT_STUCK_HOURS", "4")),
     },
+
+    // Best-effort stock deduction on the sibling mental-madness-estoque
+    // project — see reportLabelGenerated/reportLabelCancelled in
+    // _shared/estoque.ts. Left unset (both optional) so the pipeline works
+    // fine in environments that never configured it.
+    estoque: {
+      apiUrl: optional("ESTOQUE_API_URL"),
+      integrationSecret: optional("ESTOQUE_INTEGRATION_SECRET"),
+    },
   };
 }
 

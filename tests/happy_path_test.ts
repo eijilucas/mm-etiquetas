@@ -221,6 +221,40 @@ Deno.test("declares a fixed R$250/item value (not the real Shopify price) for bo
   assertEquals(cartRequestBody.options.insurance_value, 750); // 250 * 3 total items, not the real R$1299.70
 });
 
+Deno.test("reports the label to mental-madness-estoque right after it's generated, without blocking the pipeline if that call fails", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push(makeApprovedOrder());
+
+  const prevUrl = Deno.env.get("ESTOQUE_API_URL");
+  const prevSecret = Deno.env.get("ESTOQUE_INTEGRATION_SECRET");
+  Deno.env.set("ESTOQUE_API_URL", "https://mental-estoque.vercel.app");
+  Deno.env.set("ESTOQUE_INTEGRATION_SECRET", "test-estoque-secret");
+  const estoqueConfig = loadConfig();
+  if (prevUrl === undefined) Deno.env.delete("ESTOQUE_API_URL");
+  else Deno.env.set("ESTOQUE_API_URL", prevUrl);
+  if (prevSecret === undefined) Deno.env.delete("ESTOQUE_INTEGRATION_SECRET");
+  else Deno.env.set("ESTOQUE_INTEGRATION_SECRET", prevSecret);
+
+  let estoqueCallBody: any;
+  await withFetchMock(
+    (url, init) => {
+      if (url === "https://mental-estoque.vercel.app/api/mm-etiquetas/label-generated") {
+        estoqueCallBody = JSON.parse(init.body as string);
+        return jsonResponse({ error: "internal_error" }, 500); // failure must not block the pipeline
+      }
+      return meAndShopifyHandler()(url, init);
+    },
+    // deno-lint-ignore no-explicit-any
+    () => runShippingPipeline(fake as any, estoqueConfig, "order-happy-1"),
+  );
+
+  assertEquals(estoqueCallBody, {
+    shopifyOrderId: 9001,
+    items: [{ shopifyLineItemId: 1, quantity: 1 }],
+  });
+  assertEquals(fake.table("orders_shipping")[0].status, "tracking_synced"); // 500 from estoque didn't stall the order
+});
+
 Deno.test("splits the house number out of address1 instead of always sending S/N (Shopify has no dedicated number field)", async () => {
   const fake = makeFakeSupabase();
   const order = makeApprovedOrder();

@@ -17,6 +17,7 @@ import {
   cancelLabel,
 } from "./melhorenvio.ts";
 import type { MeCartRequest } from "./melhorenvio.ts";
+import { reportLabelGenerated, reportLabelCancelled } from "./estoque.ts";
 
 function log(fields: Record<string, unknown>, msg: string) {
   console.log(JSON.stringify({ msg, ...fields }));
@@ -284,6 +285,8 @@ async function generateAndPrintLabelStep(supabase: SupabaseClient, config: AppCo
     await generateLabel(config, [order.melhor_envio_order_id]);
     const printed = await printLabel(config, [order.melhor_envio_order_id]);
     log({ orderShippingId: order.id, url: printed.url }, "pipeline_label_generated");
+    // Best-effort, never blocks the pipeline — see estoque.ts.
+    await reportLabelGenerated(config, order.shopify_order_id, order.items);
     return updateOrder(supabase, order.id, {
       melhor_envio_label_id: order.melhor_envio_order_id,
       label_pdf_url: printed.url,
@@ -387,5 +390,8 @@ export async function cancelOrderLabel(
     return;
   }
   await cancelLabel(config, [order.melhor_envio_order_id], reason);
+  // Best-effort — no-ops on the estoque side if stock was never deducted
+  // for this order (e.g. cancelled before generateAndPrintLabelStep ran).
+  await reportLabelCancelled(config, order.shopify_order_id, order.items);
   await updateOrder(supabase, order.id, { status: "held", held_reason: reason, held_at: new Date().toISOString() });
 }
