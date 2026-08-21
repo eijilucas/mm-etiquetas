@@ -106,7 +106,7 @@ function noteAttribute(order: ShopifyOrder, name: string): string | undefined {
   return order.note_attributes?.find((attr) => attr.name === name)?.value || undefined;
 }
 
-export function mapShopifyOrderToCandidate(order: ShopifyOrder): OrderCandidate {
+export async function mapShopifyOrderToCandidate(order: ShopifyOrder, store: StoreConfig): Promise<OrderCandidate> {
   const customerName = order.customer
     ? [order.customer.first_name, order.customer.last_name].filter(Boolean).join(" ") || null
     : order.shipping_address?.name ?? null;
@@ -125,26 +125,39 @@ export function mapShopifyOrderToCandidate(order: ShopifyOrder): OrderCandidate 
       }
     : null;
 
+  const shopifyGraphqlId = order.admin_graphql_api_id ?? `gid://shopify/Order/${order.id}`;
+  const current = await fetchCurrentOrderState(store, shopifyGraphqlId);
+
+  // REST's line_items[].quantity is the ORIGINALLY ordered quantity — it
+  // stays put even after Shopify's own Order Edit feature removes/swaps an
+  // item (e.g. Vitor changing a variant on the order), which only shows up
+  // via GraphQL's currentQuantity. Left uncorrected, a swapped-out item
+  // would still get packed/shipped/declared. Items edited down to 0 are
+  // dropped entirely instead of listed as "0x".
+  const items = order.line_items
+    .map((item) => ({
+      shopifyLineItemId: item.id,
+      title: item.title,
+      variantTitle: item.variant_title,
+      sku: item.sku,
+      quantity: current.quantities.get(item.id) ?? item.quantity,
+      unitPrice: item.price,
+      grams: item.grams,
+    }))
+    .filter((item) => item.quantity > 0);
+
   return {
     shopifyOrderId: String(order.id),
     shopifyOrderNumber: String(order.order_number),
-    shopifyGraphqlId: order.admin_graphql_api_id ?? `gid://shopify/Order/${order.id}`,
+    shopifyGraphqlId,
     financialStatus: order.financial_status,
     fulfillmentStatus: order.fulfillment_status,
     customerName,
     customerEmail: order.customer?.email ?? order.email ?? null,
     currency: order.currency ?? "BRL",
-    totalPrice: order.total_price,
+    totalPrice: current.totalPrice ?? order.total_price,
     paidAt: order.processed_at ? new Date(order.processed_at) : null,
-    items: order.line_items.map((item) => ({
-      shopifyLineItemId: item.id,
-      title: item.title,
-      variantTitle: item.variant_title,
-      sku: item.sku,
-      quantity: item.quantity,
-      unitPrice: item.price,
-      grams: item.grams,
-    })),
+    items,
     shippingAddress,
   };
 }
@@ -349,6 +362,47 @@ interface LocalizationExtensionsResponse {
       localizationExtensions?: { edges: { node: { key: string; value: string; purpose: string; countryCode: string } }[] };
     };
   };
+}
+
+const ORDER_CURRENT_STATE_QUERY = `
+  query GetCurrentOrderState($orderId: ID!) {
+    order(id: $orderId) {
+      currentTotalPriceSet { shopMoney { amount } }
+      lineItems(first: 250) {
+        edges { node { id currentQuantity } }
+      }
+    }
+  }
+`;
+
+interface CurrentOrderStateResponse {
+  data?: {
+    order?: {
+      currentTotalPriceSet?: { shopMoney?: { amount?: string } };
+      lineItems?: { edges: { node: { id: string; currentQuantity: number } }[] };
+    };
+  };
+}
+
+// See mapShopifyOrderToCandidate for why this is needed: REST's
+// line_items[].quantity and total_price both go stale once an order is
+// edited in Shopify (swap/remove a line item) — only GraphQL's
+// currentQuantity/currentTotalPriceSet reflect what's actually on the order.
+async function fetchCurrentOrderState(
+  store: StoreConfig,
+  shopifyGraphqlId: string,
+): Promise<{ quantities: Map<number, number>; totalPrice: string | undefined }> {
+  const result = await withRetry(
+    () => graphql<CurrentOrderStateResponse>(store, ORDER_CURRENT_STATE_QUERY, { orderId: shopifyGraphqlId }),
+    { label: "shopify.fetchCurrentOrderState", isRetryable: isRetryableStatus },
+  );
+  const edges = result.data?.order?.lineItems?.edges ?? [];
+  const quantities = new Map<number, number>();
+  for (const edge of edges) {
+    const numericId = Number(edge.node.id.split("/").pop());
+    quantities.set(numericId, edge.node.currentQuantity);
+  }
+  return { quantities, totalPrice: result.data?.order?.currentTotalPriceSet?.shopMoney?.amount };
 }
 
 // Brazil's recipient CPF/CNPJ ("Informacoes adicionais" in the Shopify

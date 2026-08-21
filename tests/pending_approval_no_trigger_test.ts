@@ -48,6 +48,37 @@ function fakeUserJwt(email: string): string {
   return `${header}.${payload}.fakesignature`;
 }
 
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+// mapShopifyOrderToCandidate now makes a live GraphQL call (current line
+// item quantities/total, see shopify.ts) — every webhook test needs this
+// mocked even when it isn't the point of the test.
+function withShopifyGraphqlMock(fn: () => Promise<void>) {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("/admin/oauth/access_token")) {
+      return jsonResponse({ access_token: "shpat_test-fetched", scope: "read_orders", expires_in: 86399 });
+    }
+    if (url.includes("/graphql.json")) {
+      return jsonResponse({
+        data: {
+          order: {
+            currentTotalPriceSet: { shopMoney: { amount: "199.90" } },
+            lineItems: { edges: [{ node: { id: "gid://shopify/LineItem/1", currentQuantity: 2 } }] },
+          },
+        },
+      });
+    }
+    throw new Error(`Unexpected fetch call: ${url}`);
+  }) as typeof fetch;
+  return fn().finally(() => {
+    globalThis.fetch = original;
+  });
+}
+
 function pipelineSpy() {
   const calls: string[] = [];
   const fn = async (_supabase: unknown, _config: unknown, orderShippingId: string) => {
@@ -69,36 +100,40 @@ Deno.test("does not enqueue a shipping job when the orders/paid webhook arrives"
   const payload = JSON.stringify(shopifyOrderPayload());
   const hmac = await sign(payload, secret);
 
-  const req = new Request("http://localhost/functions/v1/shopify-webhook/test", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Shopify-Hmac-Sha256": hmac },
-    body: payload,
+  await withShopifyGraphqlMock(async () => {
+    const req = new Request("http://localhost/functions/v1/shopify-webhook/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Shopify-Hmac-Sha256": hmac },
+      body: payload,
+    });
+
+    // deno-lint-ignore no-explicit-any
+    const res = await handleShopifyWebhook(req, { config, supabase: fake as any });
+
+    assertEquals(res.status, 200);
+    const rows = fake.table("orders_shipping");
+    assertEquals(rows.length, 1);
+    assertEquals(rows[0].status, "pending_approval");
   });
-
-  // deno-lint-ignore no-explicit-any
-  const res = await handleShopifyWebhook(req, { config, supabase: fake as any });
-
-  assertEquals(res.status, 200);
-  const rows = fake.table("orders_shipping");
-  assertEquals(rows.length, 1);
-  assertEquals(rows[0].status, "pending_approval");
 });
 
 Deno.test("rejects the webhook and persists nothing when the HMAC is invalid", async () => {
   const fake = makeFakeSupabase();
   const payload = JSON.stringify(shopifyOrderPayload());
 
-  const req = new Request("http://localhost/functions/v1/shopify-webhook/test", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Shopify-Hmac-Sha256": "not-a-valid-signature" },
-    body: payload,
+  await withShopifyGraphqlMock(async () => {
+    const req = new Request("http://localhost/functions/v1/shopify-webhook/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Shopify-Hmac-Sha256": "not-a-valid-signature" },
+      body: payload,
+    });
+
+    // deno-lint-ignore no-explicit-any
+    const res = await handleShopifyWebhook(req, { config, supabase: fake as any });
+
+    assertEquals(res.status, 401);
+    assertEquals(fake.table("orders_shipping").length, 0);
   });
-
-  // deno-lint-ignore no-explicit-any
-  const res = await handleShopifyWebhook(req, { config, supabase: fake as any });
-
-  assertEquals(res.status, 401);
-  assertEquals(fake.table("orders_shipping").length, 0);
 });
 
 Deno.test("does not enqueue a shipping job even when the webhook fires repeatedly (duplicate delivery)", async () => {
@@ -106,17 +141,19 @@ Deno.test("does not enqueue a shipping job even when the webhook fires repeatedl
   const payload = JSON.stringify(shopifyOrderPayload());
   const hmac = await sign(payload, secret);
 
-  for (let i = 0; i < 3; i += 1) {
-    const req = new Request("http://localhost/functions/v1/shopify-webhook/test", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Shopify-Hmac-Sha256": hmac },
-      body: payload,
-    });
-    // deno-lint-ignore no-explicit-any
-    await handleShopifyWebhook(req, { config, supabase: fake as any });
-  }
+  await withShopifyGraphqlMock(async () => {
+    for (let i = 0; i < 3; i += 1) {
+      const req = new Request("http://localhost/functions/v1/shopify-webhook/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Shopify-Hmac-Sha256": hmac },
+        body: payload,
+      });
+      // deno-lint-ignore no-explicit-any
+      await handleShopifyWebhook(req, { config, supabase: fake as any });
+    }
 
-  assertEquals(fake.table("orders_shipping").length, 1);
+    assertEquals(fake.table("orders_shipping").length, 1);
+  });
 });
 
 Deno.test("only runs the pipeline once an order is explicitly approved through the API", async () => {

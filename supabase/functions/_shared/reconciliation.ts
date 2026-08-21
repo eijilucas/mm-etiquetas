@@ -23,7 +23,7 @@ export async function runReconciliation(
     const orders = await fetchPaidUnfulfilledOrders(store);
     let storeUpserted = 0;
     for (const order of orders) {
-      const candidate = mapShopifyOrderToCandidate(order);
+      const candidate = await mapShopifyOrderToCandidate(order, store);
       await upsertPendingCandidate(supabase, candidate, store.key);
       storeUpserted += 1;
     }

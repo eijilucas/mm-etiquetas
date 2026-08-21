@@ -56,10 +56,10 @@ export async function handleShopifyWebhook(req: Request, deps: Deps = {}): Promi
   }
 
   const eventId = req.headers.get("X-Shopify-Webhook-Id") ?? undefined;
-  const candidate = mapShopifyOrderToCandidate(order);
   const supabase = deps.supabase ?? createServiceClient(config);
 
   try {
+    const candidate = await mapShopifyOrderToCandidate(order, store);
     await upsertPendingCandidate(supabase, candidate, store.key, eventId);
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
@@ -67,7 +67,7 @@ export async function handleShopifyWebhook(req: Request, deps: Deps = {}): Promi
     });
   } catch (error) {
     console.log(
-      JSON.stringify({ level: "error", err: String(error), shopifyOrderId: candidate.shopifyOrderId, msg: "webhook_processing_failed" }),
+      JSON.stringify({ level: "error", err: String(error), shopifyOrderId: order.id, msg: "webhook_processing_failed" }),
     );
     return new Response(JSON.stringify({ error: "processing_failed" }), {
       status: 500,
