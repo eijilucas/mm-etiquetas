@@ -27,8 +27,9 @@ no mesmo projeto Supabase.
   -> label_generated -> tracking_synced`, alem de `held` e `failed`). RLS habilitado sem policies
   publicas — apenas as Edge Functions acessam a tabela, sempre com a service-role key.
 - **Edge Functions** (Deno, `supabase/functions/`):
-  - `shopify-webhook` — recebe `orders/paid` de qualquer loja em
-    `/functions/v1/shopify-webhook/<storeKey>`, valida o HMAC e faz upsert como `pending_approval`.
+  - `shopify-webhook` — recebe `orders/paid` e `orders/updated` de qualquer loja em
+    `/functions/v1/shopify-webhook/<storeKey>`, valida o HMAC e faz upsert como `pending_approval`
+    (mesmo handler pros dois topicos — o upsert so mexe em pedidos ainda `pending_approval`).
     Nunca dispara o pipeline.
   - `orders-api` — API interna (fila de aprovacao, aprovar/segurar/reverter/reprocessar). So
     `approve` e `:id/reprocess` disparam o pipeline, rodando em background via
@@ -127,9 +128,13 @@ Para cada loja:
    - `write_fulfillments`
 3. Instale o app e copie o **Admin API access token** gerado (`shpat_...`) para
    `SHOPIFY_<KEY>_ADMIN_API_TOKEN`.
-4. Configure o webhook `orders/paid` ("Pedido pago"):
-   - Aponte para `https://<project-ref>.supabase.co/functions/v1/shopify-webhook/<key>` — por
-     exemplo, com `SHOPIFY_STORE_KEYS=basico,exclusivos`:
+4. Configure os webhooks `orders/paid` ("Pedido pago") e `orders/updated` ("Pedido atualizado") —
+   o segundo existe pra refletir quase em tempo real quando alguem edita um pedido ainda
+   `pending_approval` direto no Shopify (endereco, itens, etc.), sem depender so da reconciliacao de
+   15 em 15 min:
+   - Ambos apontam pro mesmo endereco:
+     `https://<project-ref>.supabase.co/functions/v1/shopify-webhook/<key>` — por exemplo, com
+     `SHOPIFY_STORE_KEYS=basico,exclusivos`:
      - `https://<project-ref>.supabase.co/functions/v1/shopify-webhook/basico`
      - `https://<project-ref>.supabase.co/functions/v1/shopify-webhook/exclusivos`
    - Formato: JSON.
@@ -148,8 +153,9 @@ Para cada loja:
 
 Nao e preciso alterar codigo: adicione a nova chave em `SHOPIFY_STORE_KEYS`, preencha as quatro
 variaveis `SHOPIFY_<NOVA_KEY>_*` (domain, token, webhook secret, e opcionalmente label/api version),
-rode `supabase secrets set --env-file supabase/.env` de novo e registre o webhook `orders/paid` dessa
-loja apontando para `https://<project-ref>.supabase.co/functions/v1/shopify-webhook/<nova-key>`.
+rode `supabase secrets set --env-file supabase/.env` de novo e registre os webhooks `orders/paid` e
+`orders/updated` dessa loja apontando para
+`https://<project-ref>.supabase.co/functions/v1/shopify-webhook/<nova-key>`.
 
 ## Autenticacao na Melhor Envio
 
