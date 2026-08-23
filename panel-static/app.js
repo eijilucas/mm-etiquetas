@@ -128,8 +128,16 @@ function renderPendingRows() {
   const empty = document.getElementById("pendingEmpty");
   const visible = pendingStoreFilter === "all" ? pendingOrders : pendingOrders.filter((order) => order.storeKey === pendingStoreFilter);
 
+  // Prune selections for orders that dropped off the list (approved/held
+  // elsewhere) instead of wiping the whole selection — this table reloads
+  // every 30s and on every webhook-driven refresh, which used to silently
+  // unselect whatever the packer had checked mid-click.
+  const visibleIds = new Set(visible.map((order) => order.id));
+  for (const id of [...selectedPending]) {
+    if (!visibleIds.has(id)) selectedPending.delete(id);
+  }
+
   tbody.innerHTML = "";
-  selectedPending.clear();
   updateBulkButtons();
 
   empty.style.display = visible.length === 0 ? "block" : "none";
@@ -137,7 +145,7 @@ function renderPendingRows() {
   for (const order of visible) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td><input type="checkbox" data-id="${order.id}" /></td>
+      <td><input type="checkbox" data-id="${order.id}" ${selectedPending.has(order.id) ? "checked" : ""} /></td>
       <td>${orderRefHtml(order)}</td>
       <td>${storeCell(order)}</td>
       <td>${order.customerName ?? "-"}<br/><span class="items-list">${order.customerEmail ?? ""}</span></td>
@@ -212,7 +220,7 @@ function renderReleasedRows(orders) {
     const tr = document.createElement("tr");
     const canReprocess = order.status === "failed";
     tr.innerHTML = `
-      <td>${isPrintable(order) ? `<input type="checkbox" data-select="${order.id}" />` : ""}</td>
+      <td>${isPrintable(order) ? `<input type="checkbox" data-select="${order.id}" ${selectedProcessing.has(order.id) ? "checked" : ""} />` : ""}</td>
       <td>${orderRefHtml(order)}</td>
       <td>${storeCell(order)}</td>
       <td>${order.customerName ?? "-"}</td>
@@ -285,7 +293,13 @@ function renderPostedRows(orders) {
 async function loadProcessing() {
   const { orders } = await api("/processing");
   processingOrders = orders;
-  selectedProcessing.clear();
+
+  // Same reasoning as renderPendingRows: prune what's no longer selectable
+  // instead of clearing the whole selection on every refresh.
+  const selectableIds = new Set(orders.filter((order) => !order.postedAt && isPrintable(order)).map((order) => order.id));
+  for (const id of [...selectedProcessing]) {
+    if (!selectableIds.has(id)) selectedProcessing.delete(id);
+  }
   updateReleasedBulkButtons();
 
   renderReleasedRows(orders.filter((order) => !order.postedAt));
