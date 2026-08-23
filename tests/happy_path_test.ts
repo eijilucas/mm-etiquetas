@@ -387,6 +387,46 @@ Deno.test("sends the stored customer_email as the recipient email on the cart pa
   assertEquals(cartRequestBody.to.email, "cliente@example.com");
 });
 
+Deno.test("fails with a clear, reprocessable message instead of crashing when Melhor Envio's checkout returns an empty body", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push(makeApprovedOrder());
+
+  await withFetchMock(
+    (url, init) => {
+      if (url.includes("/me/shipment/checkout")) {
+        return new Response("", { status: 200 }); // 2xx with an empty body -> meFetch resolves undefined
+      }
+      return meAndShopifyHandler()(url, init);
+    },
+    // deno-lint-ignore no-explicit-any
+    () => runShippingPipeline(fake as any, config, "order-happy-1"),
+  );
+
+  const order = fake.table("orders_shipping")[0];
+  assertEquals(order.status, "failed");
+  assertEquals(order.last_error, "Melhor Envio checkout returned an empty response — retry via Reprocessar");
+});
+
+Deno.test("carries the real Melhor Envio error message (not just the HTTP status) into last_error", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push(makeApprovedOrder());
+
+  await withFetchMock(
+    (url, init) => {
+      if (url.includes("/me/cart")) {
+        return jsonResponse({ message: "CEP de destino não atendido por essa transportadora" }, 422);
+      }
+      return meAndShopifyHandler()(url, init);
+    },
+    // deno-lint-ignore no-explicit-any
+    () => runShippingPipeline(fake as any, config, "order-happy-1"),
+  );
+
+  const order = fake.table("orders_shipping")[0];
+  assertEquals(order.status, "failed");
+  assertEquals(order.last_error, "Melhor Envio API error 422: CEP de destino não atendido por essa transportadora");
+});
+
 Deno.test("resumes past a stalled 'purchased' status when the label was already generated on a prior run", async () => {
   const fake = makeFakeSupabase();
   const order = makeApprovedOrder();

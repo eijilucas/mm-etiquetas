@@ -167,9 +167,25 @@ async function meFetch<T>(config: AppConfig, path: string, init: RequestInit = {
     if (isInsufficientBalanceBody(body)) {
       throw new InsufficientBalanceError(response.status, body);
     }
-    throw new MelhorEnvioApiError(`Melhor Envio API error ${response.status}`, response.status, body);
+    throw new MelhorEnvioApiError(`Melhor Envio API error ${response.status}: ${describeErrorBody(body)}`, response.status, body);
   }
   return body as T;
+}
+
+// The API body's actual reason (e.g. "CEP inválido", a per-field validation
+// message) used to be captured on the error but never surfaced into the
+// message string — so last_error only ever showed the useless "error 422"
+// part, not what Melhor Envio actually said was wrong.
+function describeErrorBody(body: MeApiErrorBody | undefined): string {
+  if (!body) return "sem detalhes na resposta";
+  const parts: string[] = [];
+  if (body.message) parts.push(body.message);
+  if (body.errors) {
+    for (const [field, messages] of Object.entries(body.errors)) {
+      parts.push(`${field}: ${messages.join(", ")}`);
+    }
+  }
+  return parts.length > 0 ? parts.join(" | ") : "sem detalhes na resposta";
 }
 
 export function buildFromAddress(config: AppConfig): MeAddress {

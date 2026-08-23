@@ -267,6 +267,12 @@ async function purchaseStep(supabase: SupabaseClient, config: AppConfig, order: 
     throw new Error("Cannot purchase: missing melhorEnvioCartId");
   }
   const checkout = await checkoutCart(config, [order.melhor_envio_cart_id]);
+  // meFetch returns undefined for a 2xx response with an empty body — rare,
+  // but was hitting an unguarded checkout.purchase and throwing a useless
+  // "Cannot read properties of undefined" instead of something reprocessable.
+  if (!checkout) {
+    throw new Error("Melhor Envio checkout returned an empty response — retry via Reprocessar");
+  }
   const purchasedOrderId = checkout.purchase?.orders?.[0]?.id ?? order.melhor_envio_cart_id;
   log({ orderShippingId: order.id, meOrderId: purchasedOrderId }, "pipeline_purchased");
   return updateOrder(supabase, order.id, {
