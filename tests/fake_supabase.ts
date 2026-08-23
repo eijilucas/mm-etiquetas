@@ -6,21 +6,34 @@
 
 type Row = Record<string, unknown>;
 
+type OrCondition = { col: string; op: "is" | "lt"; value: unknown };
+
 type Filter =
   | { type: "eq"; col: string; value: unknown }
+  | { type: "neq"; col: string; value: unknown }
   | { type: "in"; col: string; values: unknown[] }
   | { type: "lt"; col: string; value: unknown }
   | { type: "is"; col: string; value: unknown }
-  | { type: "not_is"; col: string; value: unknown };
+  | { type: "not_is"; col: string; value: unknown }
+  | { type: "or"; conditions: OrCondition[] };
 
 function matches(row: Row, filters: Filter[]): boolean {
   for (const f of filters) {
     if (f.type === "eq" && row[f.col] !== f.value) return false;
+    if (f.type === "neq" && row[f.col] === f.value) return false;
     if (f.type === "in" && !f.values.includes(row[f.col])) return false;
     if (f.type === "lt" && !(String(row[f.col]) < String(f.value))) return false;
     // Mirrors Postgres IS NULL semantics: undefined (never set) counts as null too.
     if (f.type === "is" && !(f.value === null ? row[f.col] == null : row[f.col] === f.value)) return false;
     if (f.type === "not_is" && (f.value === null ? row[f.col] == null : row[f.col] === f.value)) return false;
+    if (f.type === "or") {
+      const anyMatch = f.conditions.some((c) => {
+        if (c.op === "is") return c.value === null ? row[c.col] == null : row[c.col] === c.value;
+        if (c.op === "lt") return row[c.col] != null && String(row[c.col]) < String(c.value);
+        return false;
+      });
+      if (!anyMatch) return false;
+    }
   }
   return true;
 }
@@ -67,6 +80,11 @@ class FakeQueryBuilder implements PromiseLike<{ data: unknown; error: unknown }>
     return this;
   }
 
+  neq(col: string, value: unknown): this {
+    this.#filters.push({ type: "neq", col, value });
+    return this;
+  }
+
   in(col: string, values: unknown[]): this {
     this.#filters.push({ type: "in", col, values });
     return this;
@@ -86,6 +104,19 @@ class FakeQueryBuilder implements PromiseLike<{ data: unknown; error: unknown }>
   not(col: string, op: string, value: unknown): this {
     if (op !== "is") throw new Error(`FakeQueryBuilder.not: unsupported operator "${op}"`);
     this.#filters.push({ type: "not_is", col, value });
+    return this;
+  }
+
+  // Parses PostgREST's `.or("col.is.null,col.lt.value")` string syntax —
+  // only "is" and "lt" are needed by the code under test.
+  or(filterString: string): this {
+    const conditions: OrCondition[] = filterString.split(",").map((part) => {
+      const [col, op, ...rest] = part.split(".");
+      const raw = rest.join(".");
+      if (op !== "is" && op !== "lt") throw new Error(`FakeQueryBuilder.or: unsupported operator "${op}"`);
+      return { col, op, value: raw === "null" ? null : raw };
+    });
+    this.#filters.push({ type: "or", conditions });
     return this;
   }
 

@@ -212,6 +212,13 @@ async function updateOrder(
   return data as OrderShippingRow;
 }
 
+// Long enough that no single pipeline run should legitimately still hold
+// the claim (an Edge Function has a hard execution ceiling well under
+// this), short enough that a run that crashed without releasing its claim
+// (e.g. the function got killed rather than throwing) doesn't strand the
+// order forever.
+const PROCESSING_LOCK_STALE_MINUTES = 5;
+
 // Each branch below only runs the steps still missing for the current
 // status, so re-running the pipeline on a partially completed order never
 // repeats an already-successful external call (idempotent by DB status).
@@ -232,6 +239,27 @@ export async function runShippingPipeline(
     return;
   }
 
+  // Claims the order for this run before doing any real work, so two
+  // overlapping invocations (a manual reconciliation trigger landing
+  // seconds from the scheduled cron, a double-clicked Reprocessar) can't
+  // both pass the same "already have a cart / already purchased"
+  // idempotency check before either writes back — without this, that race
+  // could buy the same shipment twice, or let a losing run's failure
+  // overwrite a winning run's success.
+  const staleBefore = new Date(Date.now() - PROCESSING_LOCK_STALE_MINUTES * 60 * 1000).toISOString();
+  const { data: claimed, error: claimError } = await supabase
+    .from("orders_shipping")
+    .update({ processing_started_at: new Date().toISOString() })
+    .eq("id", orderShippingId)
+    .or(`processing_started_at.is.null,processing_started_at.lt.${staleBefore}`)
+    .select("*");
+  if (claimError) throw claimError;
+  if (!claimed || claimed.length === 0) {
+    log({ orderShippingId }, "pipeline_skip_already_processing");
+    return;
+  }
+  order = claimed[0] as OrderShippingRow;
+
   try {
     if (order.status === "approved" || order.status === "failed") {
       order = await createCartStep(supabase, config, order);
@@ -247,6 +275,10 @@ export async function runShippingPipeline(
     }
   } catch (error) {
     await handlePipelineFailure(supabase, config, order, error);
+  } finally {
+    await updateOrder(supabase, orderShippingId, { processing_started_at: null }).catch((err) =>
+      log({ orderShippingId, err: String(err), level: "error" }, "pipeline_lock_release_failed"),
+    );
   }
 }
 
@@ -367,7 +399,23 @@ async function handlePipelineFailure(
   const message = error instanceof Error ? error.message : String(error);
   log({ orderShippingId: order.id, err: message, level: "error" }, "pipeline_step_failed");
 
-  await updateOrder(supabase, order.id, { status: "failed", last_error: message });
+  // Two overlapping runs of the same order (e.g. a manual reconciliation
+  // trigger landing seconds apart from the scheduled cron) can race here:
+  // whichever run finishes last simply overwrites the DB row, so a failure
+  // from the losing run could clobber a genuine success from the winning
+  // one — Shopify already has the fulfillment, but the order would show
+  // "failed" anyway. The status guard makes this write a no-op once the
+  // order has already reached the terminal success state.
+  const { data: notClobbered } = await supabase
+    .from("orders_shipping")
+    .update({ status: "failed", last_error: message })
+    .eq("id", order.id)
+    .neq("status", "tracking_synced")
+    .select("id");
+  if (!notClobbered || notClobbered.length === 0) {
+    log({ orderShippingId: order.id }, "pipeline_failure_write_skipped_already_tracking_synced");
+    return;
+  }
 
   if (error instanceof InsufficientBalanceError) {
     await sendAlert(

@@ -255,6 +255,77 @@ Deno.test("reports the label to mental-madness-estoque right after it's generate
   assertEquals(fake.table("orders_shipping")[0].status, "tracking_synced"); // 500 from estoque didn't stall the order
 });
 
+Deno.test("skips an order another run already claimed seconds ago, instead of doing any work concurrently", async () => {
+  const fake = makeFakeSupabase();
+  const order = makeApprovedOrder();
+  Object.assign(order, { processing_started_at: new Date().toISOString() }); // "another run" claimed it just now
+  fake.table("orders_shipping").push(order);
+
+  const calls = await withFetchMock(
+    () => {
+      throw new Error("should never call out — the order is already claimed by another run");
+    },
+    // deno-lint-ignore no-explicit-any
+    () => runShippingPipeline(fake as any, config, "order-happy-1"),
+  );
+
+  assertEquals(calls, 0);
+  const untouched = fake.table("orders_shipping")[0];
+  assertEquals(untouched.status, "approved"); // unchanged — no step ran
+  assertEquals(untouched.melhor_envio_cart_id, undefined);
+});
+
+Deno.test("claims a stale lock (older than 5 minutes) instead of treating it as still in-flight", async () => {
+  const fake = makeFakeSupabase();
+  const order = makeApprovedOrder();
+  Object.assign(order, { processing_started_at: new Date(Date.now() - 6 * 60 * 1000).toISOString() }); // stale
+  fake.table("orders_shipping").push(order);
+
+  await withFetchMock(meAndShopifyHandler(), () =>
+    // deno-lint-ignore no-explicit-any
+    runShippingPipeline(fake as any, config, "order-happy-1"));
+
+  const updated = fake.table("orders_shipping")[0];
+  assertEquals(updated.status, "tracking_synced");
+  assertEquals(updated.processing_started_at, null); // released after the run
+});
+
+Deno.test("does not let a losing concurrent run's failure clobber a winning run's success (tracking_synced)", async () => {
+  // Simulates two overlapping runShippingPipeline calls for the same order
+  // (e.g. a manual reconciliation trigger landing seconds from the
+  // scheduled cron): this run is mid-flight and about to fail, but by the
+  // time it writes, "another process" has already committed tracking_synced
+  // to the row underneath it — the fetch mock mutates the fake table
+  // directly to stand in for that concurrent writer.
+  const fake = makeFakeSupabase();
+  const order = makeApprovedOrder();
+  Object.assign(order, {
+    status: "failed",
+    melhor_envio_cart_id: "me-cart-1",
+    melhor_envio_order_id: "me-order-1",
+    label_pdf_url: "https://melhorenvio.com.br/labels/me-order-1.pdf",
+  });
+  fake.table("orders_shipping").push(order);
+
+  await withFetchMock(
+    (url, init) => {
+      if (url.includes("/me/shipment/tracking")) {
+        const row = fake.table("orders_shipping")[0];
+        Object.assign(row, { status: "tracking_synced", tracking_code: "WINNER-CODE", last_error: null });
+        return jsonResponse({ "me-order-1": { id: "me-order-1", status: "generated" } }); // no tracking yet -> this run throws
+      }
+      return meAndShopifyHandler()(url, init);
+    },
+    // deno-lint-ignore no-explicit-any
+    () => runShippingPipeline(fake as any, config, "order-happy-1"),
+  );
+
+  const updated = fake.table("orders_shipping")[0];
+  assertEquals(updated.status, "tracking_synced");
+  assertEquals(updated.tracking_code, "WINNER-CODE");
+  assertEquals(updated.last_error, null);
+});
+
 Deno.test("splits the house number out of address1 instead of always sending S/N (Shopify has no dedicated number field)", async () => {
   const fake = makeFakeSupabase();
   const order = makeApprovedOrder();
