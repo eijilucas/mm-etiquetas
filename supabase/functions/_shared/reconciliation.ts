@@ -2,7 +2,7 @@ import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import type { AppConfig } from "./config.ts";
 import { fetchPaidUnfulfilledOrders, mapShopifyOrderToCandidate } from "./shopify.ts";
 import { upsertPendingCandidate } from "./db.ts";
-import { sendAlert } from "./pipeline.ts";
+import { sendAlert, runShippingPipeline, TRACKING_NOT_YET_AVAILABLE_ERROR } from "./pipeline.ts";
 import { fetchTrackingBatch } from "./melhorenvio.ts";
 
 function log(fields: Record<string, unknown>, msg: string) {
@@ -68,6 +68,33 @@ export async function syncPostedOrders(supabase: SupabaseClient, config: AppConf
 
   log({ checked: rows.length, posted }, "reconciliation_posted_synced");
   return { checked: rows.length, posted };
+}
+
+// Melhor Envio often doesn't assign the real tracking code until the
+// carrier physically scans the package in, which can be hours after the
+// label was bought — syncTrackingStep throws and the order sits in
+// "failed" until someone clicks Reprocessar by hand. This retries exactly
+// that failure class automatically (only it — every other failure reason,
+// e.g. an invalid CEP, needs a human; blindly retrying wouldn't fix those).
+export async function retryStalledTracking(
+  supabase: SupabaseClient,
+  config: AppConfig,
+  runPipeline: typeof runShippingPipeline = runShippingPipeline,
+): Promise<{ retried: number }> {
+  const { data: stalled, error } = await supabase
+    .from("orders_shipping")
+    .select("id")
+    .eq("status", "failed")
+    .eq("last_error", TRACKING_NOT_YET_AVAILABLE_ERROR)
+    .not("melhor_envio_order_id", "is", null);
+  if (error) throw error;
+
+  const rows = (stalled ?? []) as { id: string }[];
+  for (const row of rows) {
+    await runPipeline(supabase, config, row.id);
+  }
+  log({ retried: rows.length }, "reconciliation_retried_stalled_tracking");
+  return { retried: rows.length };
 }
 
 const NON_TERMINAL_STATUSES = ["approved", "cart_created", "purchased", "label_generated", "failed"];

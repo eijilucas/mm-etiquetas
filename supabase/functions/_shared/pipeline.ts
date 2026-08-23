@@ -23,6 +23,11 @@ function log(fields: Record<string, unknown>, msg: string) {
   console.log(JSON.stringify({ msg, ...fields }));
 }
 
+// Shared with reconciliation.ts's retryStalledTracking, which auto-retries
+// exactly this failure (and only this one — every other failure reason
+// needs a human, retrying wouldn't fix an invalid CEP for example).
+export const TRACKING_NOT_YET_AVAILABLE_ERROR = "Tracking code not yet available from Melhor Envio for this order";
+
 export async function sendAlert(config: AppConfig, text: string): Promise<void> {
   if (!config.alerts.webhookUrl) {
     log({ text, level: "warn" }, "alert_webhook_not_configured");
@@ -322,7 +327,7 @@ async function syncTrackingStep(supabase: SupabaseClient, config: AppConfig, ord
   // via reprocess) instead of ever faking a code from the internal order id.
   const trackingCode = order.tracking_code ?? (await fetchTrackingByOrderId(config, order.melhor_envio_order_id));
   if (!trackingCode) {
-    throw new Error("Tracking code not yet available from Melhor Envio for this order");
+    throw new Error(TRACKING_NOT_YET_AVAILABLE_ERROR);
   }
 
   const store = getStoreByKey(config, order.store_key);

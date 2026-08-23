@@ -2,7 +2,7 @@ import { loadConfig } from "../_shared/config.ts";
 import type { AppConfig } from "../_shared/config.ts";
 import { requireCronSecret } from "../_shared/auth.ts";
 import { createServiceClient } from "../_shared/db.ts";
-import { runReconciliation, checkStuckOrders, syncPostedOrders } from "../_shared/reconciliation.ts";
+import { runReconciliation, checkStuckOrders, syncPostedOrders, retryStalledTracking } from "../_shared/reconciliation.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
 export interface Deps {
@@ -30,6 +30,7 @@ export async function handleReconciliationCron(req: Request, deps: Deps = {}): P
     const result = await runReconciliation(supabase, config);
     await checkStuckOrders(supabase, config);
     await syncPostedOrders(supabase, config);
+    await retryStalledTracking(supabase, config);
     return new Response(JSON.stringify(result), { status: 200, headers: { "Content-Type": "application/json" } });
   } catch (error) {
     console.log(JSON.stringify({ level: "error", err: String(error), msg: "reconciliation_cron_failed" }));

@@ -188,14 +188,47 @@ function isPrintable(order) {
   return order.status === "label_generated" || order.status === "tracking_synced";
 }
 
-// Melhor Envio now bundles the content declaration into the label PDF
-// itself, so this only ever needs to open one document per order. Still
-// opened via window.open in the same synchronous click gesture so the
-// popup blocker treats the whole batch as user-initiated.
+// Calling window.open() in a loop is unreliable across browsers — some
+// popup blockers only exempt the FIRST call per click gesture and silently
+// block the rest, so part of the batch would just never open with no
+// indication anything was skipped. Instead this opens a single tab (which
+// is always allowed, it's the one direct window.open in the click handler)
+// listing every label as a real link — clicking a link is never treated as
+// a popup, so every single one is guaranteed to open.
 function openAllLabels(orders) {
-  for (const order of orders) {
-    if (order.labelPdfUrl) window.open(order.labelPdfUrl, "_blank");
+  const withLabels = orders.filter((order) => order.labelPdfUrl);
+  if (withLabels.length === 0) return;
+
+  const win = window.open("", "_blank");
+  if (!win) {
+    alert("O navegador bloqueou a aba. Permita pop-ups para este site e tente de novo.");
+    return;
   }
+
+  const links = withLabels
+    .map((order) => `<a href="${order.labelPdfUrl}" target="_blank" rel="noopener">${orderRef(order)}</a>`)
+    .join("");
+  win.document.write(`
+    <!doctype html>
+    <html lang="pt-BR">
+    <head>
+      <meta charset="utf-8" />
+      <title>Etiquetas para imprimir</title>
+      <style>
+        body { background: #000; color: #f2f2f2; font-family: sans-serif; padding: 24px; }
+        h1 { font-size: 16px; font-weight: 600; margin-bottom: 16px; }
+        a { display: block; background: #0a0a0a; border: 1px solid #2a2a2a; color: #fff; padding: 14px 18px;
+            margin-bottom: 10px; border-radius: 8px; text-decoration: none; font-size: 15px; }
+        a:hover { border-color: #fff; }
+      </style>
+    </head>
+    <body>
+      <h1>Clique em cada pedido para abrir a etiqueta numa aba nova</h1>
+      ${links}
+    </body>
+    </html>
+  `);
+  win.document.close();
 }
 
 let processingOrders = [];
