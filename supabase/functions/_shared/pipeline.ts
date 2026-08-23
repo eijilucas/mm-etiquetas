@@ -397,7 +397,13 @@ export async function cancelOrderLabel(
 ): Promise<void> {
   const order = await fetchOrder(supabase, orderShippingId);
   if (!order.melhor_envio_order_id) {
+    // Nothing was ever purchased at Melhor Envio (e.g. it failed at cart
+    // creation on a bad address) — there's no shipment to cancel, but the
+    // order still needs a way out of "failed" and into held/pending_approval,
+    // otherwise Cancelar is a dead click and the order is stuck forever even
+    // after someone fixes the underlying Shopify data.
     log({ orderShippingId }, "cancel_skipped_no_label_purchased");
+    await updateOrder(supabase, order.id, { status: "held", held_reason: reason, held_at: new Date().toISOString() });
     return;
   }
   await cancelLabel(config, [order.melhor_envio_order_id], reason);

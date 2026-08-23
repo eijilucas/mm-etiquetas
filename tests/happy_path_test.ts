@@ -1,6 +1,6 @@
 import "./test_env.ts";
 import { assertEquals } from "jsr:@std/assert@1";
-import { runShippingPipeline } from "../supabase/functions/_shared/pipeline.ts";
+import { runShippingPipeline, cancelOrderLabel } from "../supabase/functions/_shared/pipeline.ts";
 import { loadConfig } from "../supabase/functions/_shared/config.ts";
 import { makeFakeSupabase } from "./fake_supabase.ts";
 
@@ -523,4 +523,25 @@ Deno.test("blocks with a descriptive failed status when no recipient CPF/CNPJ is
   if (!/document|cpf/i.test(String(updated.last_error))) {
     throw new Error(`expected last_error to mention document/cpf, got: ${updated.last_error}`);
   }
+});
+
+Deno.test("cancelOrderLabel moves an order to held even when it failed before ever purchasing a label", async () => {
+  // Previously a dead click: an order that failed at cart creation (e.g. an
+  // invalid CEP) has no melhor_envio_order_id, so there was nothing to
+  // cancel at Melhor Envio and the function just returned without touching
+  // status — leaving it stuck in "failed" forever with no way back into the
+  // queue, even after someone fixed the underlying Shopify address.
+  const fake = makeFakeSupabase();
+  const order = makeApprovedOrder();
+  Object.assign(order, { status: "failed", last_error: "Melhor Envio API error 422: CEP invalido" });
+  fake.table("orders_shipping").push(order);
+
+  // No fetch mock at all — asserts this path never calls Melhor Envio, since
+  // there's genuinely nothing to cancel.
+  // deno-lint-ignore no-explicit-any
+  await cancelOrderLabel(fake as any, config, "order-happy-1", "endereco corrigido, reenviar");
+
+  const updated = fake.table("orders_shipping")[0];
+  assertEquals(updated.status, "held");
+  assertEquals(updated.held_reason, "endereco corrigido, reenviar");
 });
