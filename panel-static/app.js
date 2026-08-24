@@ -237,6 +237,7 @@ let cancelTargetId = null;
 
 function updateReleasedBulkButtons() {
   document.getElementById("bulkPrintBtn").disabled = selectedProcessing.size === 0;
+  document.getElementById("markPostedBtn").disabled = selectedProcessing.size === 0;
 }
 
 // "Liberados" = approved through label-issued/failed, still not physically
@@ -390,6 +391,25 @@ async function refreshKpis() {
   document.getElementById("kpiFailed").textContent = processing.orders.filter((o) => o.status === "failed").length;
 }
 
+// Best-effort — the backend returns balance: null when it can't read the
+// wallet (e.g. missing API permission), so the banner just stays hidden
+// instead of showing a false alarm.
+async function refreshBalance() {
+  const banner = document.getElementById("balanceBanner");
+  try {
+    const { balance, lowBalanceThreshold } = await api("/balance");
+    if (balance == null || balance >= lowBalanceThreshold) {
+      banner.style.display = "none";
+      return;
+    }
+    banner.textContent = `⚠️ Saldo baixo na Melhor Envio: ${formatCurrency(balance, "BRL")}. Adicione crédito para não travar a emissão de etiquetas.`;
+    banner.style.display = "block";
+  } catch (error) {
+    console.error(error);
+    banner.style.display = "none";
+  }
+}
+
 function setupTabs() {
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -502,6 +522,30 @@ function setupBulkPrint() {
   });
 }
 
+// Melhor Envio only marks posted_at once the carrier scans the package in
+// (syncPostedOrders), which can lag hours behind Vitor physically dropping
+// it off — this manual button (calling the same /post route) is the
+// fallback so a package he already posted shows up in "Postados" right away
+// instead of only once the automatic sync catches up.
+function setupMarkPosted() {
+  const btn = document.getElementById("markPostedBtn");
+  btn.addEventListener("click", async () => {
+    const ids = Array.from(selectedProcessing);
+    if (ids.length === 0) return;
+    btn.disabled = true;
+    try {
+      await api("/post", { method: "POST", body: JSON.stringify({ ids }) });
+      selectedProcessing.clear();
+      await loadProcessing();
+      await refreshKpis();
+    } catch (error) {
+      alert(`Erro ao marcar como postado: ${error.message}`);
+    } finally {
+      updateReleasedBulkButtons();
+    }
+  });
+}
+
 function setupToolbar() {
   document.getElementById("selectAllReleasedBtn").addEventListener("click", () => {
     const checkboxes = document.querySelectorAll('#releasedTableBody input[type="checkbox"]');
@@ -558,7 +602,7 @@ function setupStockConfirmDialog() {
 
 async function loadAll() {
   try {
-    await Promise.all([loadPending(), loadProcessing(), loadHeld(), refreshKpis()]);
+    await Promise.all([loadPending(), loadProcessing(), loadHeld(), refreshKpis(), refreshBalance()]);
   } catch (error) {
     console.error(error);
   }
@@ -568,6 +612,7 @@ setupTabs();
 setupLogin();
 setupHoldDialog();
 setupBulkPrint();
+setupMarkPosted();
 setupCancelLabelDialog();
 setupStockConfirmDialog();
 setupToolbar();

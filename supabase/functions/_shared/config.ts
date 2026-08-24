@@ -108,6 +108,10 @@ export function loadConfig() {
       // product's real sale price on the (non-commercial, no-NF-e) content
       // declaration, it uses this flat convention for every item instead.
       declaredValuePerItem: Number(optional("MELHORENVIO_DECLARED_VALUE_PER_ITEM", "250")),
+      // Below this, the panel shows a low-balance warning banner — picked
+      // so there's still room for a handful of label purchases before the
+      // wallet actually runs out and starts hard-failing the pipeline.
+      lowBalanceThreshold: Number(optional("MELHORENVIO_LOW_BALANCE_THRESHOLD", "100")),
       // The store doesn't track real per-product weight/dimensions in
       // Shopify (no read_products scope, no weight registered on any
       // variant) — Vitor's own manual process is a fixed estimate by item

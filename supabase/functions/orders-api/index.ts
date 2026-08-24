@@ -5,7 +5,7 @@ import { createServiceClient, toApiShape } from "../_shared/db.ts";
 import type { OrderShippingRow, ShippingStatus } from "../_shared/db.ts";
 import { runShippingPipeline, cancelOrderLabel } from "../_shared/pipeline.ts";
 import { runReconciliation } from "../_shared/reconciliation.ts";
-import { fetchDeclarationPdfUrl } from "../_shared/melhorenvio.ts";
+import { fetchAccountBalance, fetchDeclarationPdfUrl } from "../_shared/melhorenvio.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
 const PROCESSING_STATUSES: ShippingStatus[] = [
@@ -179,9 +179,17 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
       const { error } = await supabase
         .from("orders_shipping")
         .update({ posted_at: new Date().toISOString(), posted_by: user.email })
-        .in("id", body.ids);
+        .in("id", body.ids)
+        .in("status", PROCESSING_STATUSES);
       if (error) throw error;
       return json({ ok: true });
+    }
+
+    // Best-effort wallet balance for the low-balance banner — fetchAccountBalance
+    // itself never throws (see melhorenvio.ts), so this can't 500 the panel.
+    if (req.method === "GET" && segments[0] === "balance") {
+      const balance = await fetchAccountBalance(config);
+      return json({ balance, lowBalanceThreshold: config.melhorEnvio.lowBalanceThreshold });
     }
 
     // Explicit manual reversal is the only way a held order re-enters pending_approval.

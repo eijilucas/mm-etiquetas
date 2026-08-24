@@ -188,6 +188,33 @@ function describeErrorBody(body: MeApiErrorBody | undefined): string {
   return parts.length > 0 ? parts.join(" | ") : "sem detalhes na resposta";
 }
 
+export interface MeBalanceResponse {
+  balance?: number | string | { available?: number | string; value?: number | string };
+  [key: string]: unknown;
+}
+
+// GET /me/balance isn't in Melhor Envio's public docs (only found via
+// unofficial SDKs) and returned 403 against this app's current access token
+// when tested directly — the token's scopes don't include wallet/balance
+// read access, so it needs to be regenerated on Melhor Envio's site with
+// that permission before this ever returns a real number. Until then (and
+// for any other unexpected failure) this returns null instead of throwing,
+// so the panel just hides the balance banner rather than breaking.
+export async function fetchAccountBalance(config: AppConfig): Promise<number | null> {
+  try {
+    const body = await meFetch<MeBalanceResponse>(config, "/me/balance", { method: "GET" });
+    const raw =
+      typeof body?.balance === "object" && body.balance !== null
+        ? body.balance.available ?? body.balance.value
+        : body?.balance;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : null;
+  } catch (error) {
+    console.log(JSON.stringify({ level: "warn", err: String(error), msg: "melhorenvio_balance_fetch_failed" }));
+    return null;
+  }
+}
+
 export function buildFromAddress(config: AppConfig): MeAddress {
   const from = config.melhorEnvio.from;
   return {
