@@ -237,7 +237,6 @@ let cancelTargetId = null;
 
 function updateReleasedBulkButtons() {
   document.getElementById("bulkPrintBtn").disabled = selectedProcessing.size === 0;
-  document.getElementById("markPostedBtn").disabled = selectedProcessing.size === 0;
 }
 
 // "Liberados" = approved through label-issued/failed, still not physically
@@ -522,30 +521,6 @@ function setupBulkPrint() {
   });
 }
 
-// Melhor Envio only marks posted_at once the carrier scans the package in
-// (syncPostedOrders), which can lag hours behind Vitor physically dropping
-// it off — this manual button (calling the same /post route) is the
-// fallback so a package he already posted shows up in "Postados" right away
-// instead of only once the automatic sync catches up.
-function setupMarkPosted() {
-  const btn = document.getElementById("markPostedBtn");
-  btn.addEventListener("click", async () => {
-    const ids = Array.from(selectedProcessing);
-    if (ids.length === 0) return;
-    btn.disabled = true;
-    try {
-      await api("/post", { method: "POST", body: JSON.stringify({ ids }) });
-      selectedProcessing.clear();
-      await loadProcessing();
-      await refreshKpis();
-    } catch (error) {
-      alert(`Erro ao marcar como postado: ${error.message}`);
-    } finally {
-      updateReleasedBulkButtons();
-    }
-  });
-}
-
 function setupToolbar() {
   document.getElementById("selectAllReleasedBtn").addEventListener("click", () => {
     const checkboxes = document.querySelectorAll('#releasedTableBody input[type="checkbox"]');
@@ -612,7 +587,6 @@ setupTabs();
 setupLogin();
 setupHoldDialog();
 setupBulkPrint();
-setupMarkPosted();
 setupCancelLabelDialog();
 setupStockConfirmDialog();
 setupToolbar();
