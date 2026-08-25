@@ -274,13 +274,15 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
     // deleting the row (who held it, why, when stays in the DB) — for
     // orders handled entirely outside this system that don't belong in any
     // queue anymore (e.g. #3290, a label bought by hand on Melhor Envio's
-    // own site). Only from "held" since that's the one place with no
-    // automated next step waiting on the order.
+    // own site — or a batch that failed here and got fulfilled by hand on
+    // Shopify directly, tracking code and all). Only from "held" or
+    // "failed" — the two places with no automated next step waiting on the
+    // order — so an order still actively mid-pipeline can't be dismissed.
     if (req.method === "POST" && segments[1] === "archive") {
       const id = segments[0];
       const { data: order, error: findError } = await supabase.from("orders_shipping").select("*").eq("id", id).single();
       if (findError || !order) return json({ error: "not_found" }, 404);
-      if (order.status !== "held") {
+      if (order.status !== "held" && order.status !== "failed") {
         return json({ error: `cannot archive order in status ${order.status}` }, 400);
       }
       const { error } = await supabase

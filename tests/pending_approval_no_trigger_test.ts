@@ -391,7 +391,29 @@ Deno.test("archives a held order so it drops out of every panel tab", async () =
   assertEquals(order.archived_by, "tester@example.com");
 });
 
-Deno.test("refuses to archive an order that isn't held", async () => {
+Deno.test("archives a failed order resolved entirely by hand outside the system", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push({
+    id: "order-failed",
+    store_key: "test",
+    shopify_order_id: "7003",
+    status: "failed",
+    last_error: "Melhor Envio API error 422: sem detalhes na resposta",
+  });
+
+  const req = new Request("http://localhost/functions/v1/orders-api/order-failed/archive", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+  });
+
+  // deno-lint-ignore no-explicit-any
+  const res = await handleOrdersApi(req, { config, supabase: fake as any });
+
+  assertEquals(res.status, 200);
+  assertEquals(fake.table("orders_shipping")[0].status, "archived");
+});
+
+Deno.test("refuses to archive an order that isn't held or failed", async () => {
   const fake = makeFakeSupabase();
   fake.table("orders_shipping").push({
     id: "order-pending",

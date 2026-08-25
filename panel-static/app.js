@@ -460,10 +460,33 @@ function renderManualTrackingRows() {
       <td>${order.customerName ?? "-"}</td>
       <td>${pill(order.status)}</td>
       <td>${codeCell}</td>
-      <td><button class="btn" data-send-tracking="${order.id}" ${auto && !preview ? "disabled" : ""}>Enviar</button></td>
+      <td>
+        <button class="btn" data-send-tracking="${order.id}" ${auto && !preview ? "disabled" : ""}>Enviar</button>
+        ${order.status === "failed" ? `<button class="btn danger" data-archive-manual="${order.id}">Remover</button>` : ""}
+      </td>
     `;
     tbody.appendChild(tr);
   }
+
+  // Covers orders that got resolved entirely by hand outside this system —
+  // label bought AND tracking already sent to Shopify directly — so there's
+  // nothing left to send here, just needs to drop out of the queue. Only
+  // offered for "failed" (the /archive route doesn't allow other statuses).
+  tbody.querySelectorAll("[data-archive-manual]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.archiveManual;
+      if (!confirm("Remover esse pedido do painel? Use quando ele ja foi resolvido inteiramente por fora (etiqueta e rastreio ja enviados na mao).")) return;
+      btn.disabled = true;
+      try {
+        await api(`/${id}/archive`, { method: "POST" });
+        await loadManualTracking();
+        await refreshKpis();
+      } catch (error) {
+        alert(`Erro ao remover: ${error.message}`);
+        btn.disabled = false;
+      }
+    });
+  });
 
   tbody.querySelectorAll("[data-send-tracking]").forEach((btn) => {
     btn.addEventListener("click", async () => {
