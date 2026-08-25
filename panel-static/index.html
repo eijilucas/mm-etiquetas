@@ -211,6 +211,21 @@
     </div>
   </dialog>
 
+  <dialog id="alertDialog" class="message-dialog">
+    <p class="message-dialog-text" id="alertDialogMessage"></p>
+    <div class="dialog-actions">
+      <button class="btn" id="alertDialogOkBtn">OK</button>
+    </div>
+  </dialog>
+
+  <dialog id="confirmDialog" class="message-dialog">
+    <p class="message-dialog-text" id="confirmDialogMessage"></p>
+    <div class="dialog-actions">
+      <button class="btn" id="confirmDialogNoBtn">Cancelar</button>
+      <button class="btn danger" id="confirmDialogYesBtn">Confirmar</button>
+    </div>
+  </dialog>
+
   <dialog id="cancelLabelDialog">
     <label for="cancelLabelReasonInput">Motivo do cancelamento</label>
     <textarea id="cancelLabelReasonInput" rows="3" placeholder="Ex: cliente pediu reembolso, endereco errado"></textarea>

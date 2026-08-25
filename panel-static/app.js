@@ -67,6 +67,53 @@ async function api(path, options = {}) {
   return res.json();
 }
 
+// Themed replacements for the browser's native alert()/confirm() — those
+// render as an unstyled OS dialog that clashes hard with the site's dark
+// theme (screenshot from Vitor). Both reuse the same <dialog> pattern
+// already used for holdDialog/cancelLabelDialog and resolve a Promise on
+// button click, so every call site just becomes `await showAlert(...)` /
+// `await showConfirm(...)`.
+function showAlert(message) {
+  return new Promise((resolve) => {
+    const dialog = document.getElementById("alertDialog");
+    document.getElementById("alertDialogMessage").textContent = message;
+    const okBtn = document.getElementById("alertDialogOkBtn");
+    const onOk = () => {
+      okBtn.removeEventListener("click", onOk);
+      dialog.close();
+      resolve();
+    };
+    okBtn.addEventListener("click", onOk);
+    dialog.showModal();
+  });
+}
+
+function showConfirm(message) {
+  return new Promise((resolve) => {
+    const dialog = document.getElementById("confirmDialog");
+    document.getElementById("confirmDialogMessage").textContent = message;
+    const yesBtn = document.getElementById("confirmDialogYesBtn");
+    const noBtn = document.getElementById("confirmDialogNoBtn");
+    const cleanup = () => {
+      yesBtn.removeEventListener("click", onYes);
+      noBtn.removeEventListener("click", onNo);
+    };
+    const onYes = () => {
+      cleanup();
+      dialog.close();
+      resolve(true);
+    };
+    const onNo = () => {
+      cleanup();
+      dialog.close();
+      resolve(false);
+    };
+    yesBtn.addEventListener("click", onYes);
+    noBtn.addEventListener("click", onNo);
+    dialog.showModal();
+  });
+}
+
 function formatCurrency(value, currency) {
   const number = Number(value);
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: currency || "BRL" }).format(number);
@@ -203,13 +250,13 @@ function isPrintable(order) {
 // is always allowed, it's the one direct window.open in the click handler)
 // listing every label as a real link — clicking a link is never treated as
 // a popup, so every single one is guaranteed to open.
-function openAllLabels(orders) {
+async function openAllLabels(orders) {
   const withLabels = orders.filter((order) => order.labelPdfUrl);
   if (withLabels.length === 0) return;
 
   const win = window.open("", "_blank");
   if (!win) {
-    alert("O navegador bloqueou a aba. Permita pop-ups para este site e tente de novo.");
+    await showAlert("O navegador bloqueou a aba. Permita pop-ups para este site e tente de novo.");
     return;
   }
 
@@ -296,7 +343,7 @@ function renderReleasedRows(orders) {
         await loadProcessing();
         await refreshKpis();
       } catch (error) {
-        alert(`Erro ao reprocessar: ${error.message}`);
+        await showAlert(`Erro ao reprocessar: ${error.message}`);
         btn.disabled = false;
       }
     });
@@ -381,7 +428,7 @@ async function loadHeld() {
         await loadHeld();
         await refreshKpis();
       } catch (error) {
-        alert(`Erro ao reverter: ${error.message}`);
+        await showAlert(`Erro ao reverter: ${error.message}`);
         btn.disabled = false;
       }
     });
@@ -392,14 +439,14 @@ async function loadHeld() {
   tbody.querySelectorAll("[data-archive]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.archive;
-      if (!confirm("Remover esse pedido do painel? Ele para de aparecer em qualquer aba (o historico continua salvo no banco).")) return;
+      if (!(await showConfirm("Remover esse pedido do painel? Ele para de aparecer em qualquer aba (o historico continua salvo no banco)."))) return;
       btn.disabled = true;
       try {
         await api(`/${id}/archive`, { method: "POST" });
         await loadHeld();
         await refreshKpis();
       } catch (error) {
-        alert(`Erro ao remover: ${error.message}`);
+        await showAlert(`Erro ao remover: ${error.message}`);
         btn.disabled = false;
       }
     });
@@ -524,14 +571,14 @@ function renderManualTrackingRows() {
   tbody.querySelectorAll("[data-archive-manual]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.archiveManual;
-      if (!confirm("Remover esse pedido do painel? Use quando ele ja foi resolvido inteiramente por fora (etiqueta e rastreio ja enviados na mao).")) return;
+      if (!(await showConfirm("Remover esse pedido do painel? Use quando ele ja foi resolvido inteiramente por fora (etiqueta e rastreio ja enviados na mao)."))) return;
       btn.disabled = true;
       try {
         await api(`/${id}/archive`, { method: "POST" });
         await loadManualTracking();
         await refreshKpis();
       } catch (error) {
-        alert(`Erro ao remover: ${error.message}`);
+        await showAlert(`Erro ao remover: ${error.message}`);
         btn.disabled = false;
       }
     });
@@ -543,7 +590,7 @@ function renderManualTrackingRows() {
       const order = manualTrackingOrders.find((o) => o.id === id);
       const trackingCode = resolveManualTrackingCode(order);
       if (!trackingCode) {
-        if (!order.melhorEnvioOrderId) alert("Informe o codigo de rastreio.");
+        if (!order.melhorEnvioOrderId) await showAlert("Informe o codigo de rastreio.");
         return;
       }
       btn.disabled = true;
@@ -552,7 +599,7 @@ function renderManualTrackingRows() {
         await loadManualTracking();
         await refreshKpis();
       } catch (error) {
-        alert(`Erro ao enviar rastreio: ${error.message}`);
+        await showAlert(`Erro ao enviar rastreio: ${error.message}`);
         btn.disabled = false;
       }
     });
@@ -591,7 +638,7 @@ function setupManualTracking() {
     selectedManualTracking.clear();
     await loadManualTracking();
     await refreshKpis();
-    if (errors.length > 0) alert(`Alguns pedidos falharam ao enviar:\n${errors.join("\n")}`);
+    if (errors.length > 0) await showAlert(`Alguns pedidos falharam ao enviar:\n${errors.join("\n")}`);
   });
 
   document.getElementById("bulkArchiveManualBtn").addEventListener("click", async () => {
@@ -599,7 +646,7 @@ function setupManualTracking() {
       (id) => manualTrackingOrders.find((o) => o.id === id)?.status === "failed",
     );
     if (ids.length === 0) return;
-    if (!confirm(`Remover ${ids.length} pedido(s) do painel? Use quando ja foram resolvidos inteiramente por fora.`)) return;
+    if (!(await showConfirm(`Remover ${ids.length} pedido(s) do painel? Use quando ja foram resolvidos inteiramente por fora.`))) return;
     const errors = [];
     for (const id of ids) {
       try {
@@ -611,7 +658,7 @@ function setupManualTracking() {
     selectedManualTracking.clear();
     await loadManualTracking();
     await refreshKpis();
-    if (errors.length > 0) alert(`Alguns pedidos falharam ao remover:\n${errors.join("\n")}`);
+    if (errors.length > 0) await showAlert(`Alguns pedidos falharam ao remover:\n${errors.join("\n")}`);
   });
 }
 
@@ -710,7 +757,7 @@ function setupHoldDialog() {
   document.getElementById("holdConfirmBtn").addEventListener("click", async () => {
     const reason = reasonInput.value.trim();
     if (!reason) {
-      alert("Informe o motivo.");
+      await showAlert("Informe o motivo.");
       return;
     }
     try {
@@ -722,7 +769,7 @@ function setupHoldDialog() {
       await loadPending();
       await refreshKpis();
     } catch (error) {
-      alert(`Erro ao segurar pedidos: ${error.message}`);
+      await showAlert(`Erro ao segurar pedidos: ${error.message}`);
     }
   });
 }
@@ -735,7 +782,7 @@ function setupCancelLabelDialog() {
   document.getElementById("cancelLabelConfirmBtn").addEventListener("click", async () => {
     const reason = document.getElementById("cancelLabelReasonInput").value.trim();
     if (!reason) {
-      alert("Informe o motivo.");
+      await showAlert("Informe o motivo.");
       return;
     }
     try {
@@ -744,17 +791,17 @@ function setupCancelLabelDialog() {
       await loadProcessing();
       await refreshKpis();
     } catch (error) {
-      alert(`Erro ao cancelar etiqueta: ${error.message}`);
+      await showAlert(`Erro ao cancelar etiqueta: ${error.message}`);
     }
   });
 }
 
 function setupBulkPrint() {
   const btn = document.getElementById("bulkPrintBtn");
-  btn.addEventListener("click", () => {
+  btn.addEventListener("click", async () => {
     const orders = processingOrders.filter((o) => selectedProcessing.has(o.id));
     if (orders.length === 0) return;
-    openAllLabels(orders);
+    await openAllLabels(orders);
   });
 }
 
@@ -796,7 +843,7 @@ function setupToolbar() {
       });
       if (preview.sufficient === false) {
         const shortfall = preview.estimatedTotal - preview.balance;
-        alert(
+        await showAlert(
           `Saldo insuficiente na Melhor Envio para emitir essas etiquetas.\n\n` +
             `Frete estimado: ${formatCurrency(preview.estimatedTotal, "BRL")}\n` +
             `Saldo disponivel: ${formatCurrency(preview.balance, "BRL")}\n` +
@@ -838,7 +885,7 @@ function setupStockConfirmDialog() {
       await loadPending();
       await refreshKpis();
     } catch (error) {
-      alert(`Erro ao aprovar: ${error.message}`);
+      await showAlert(`Erro ao aprovar: ${error.message}`);
     }
   });
 }

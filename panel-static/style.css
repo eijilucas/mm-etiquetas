@@ -406,6 +406,13 @@ dialog .dialog-actions {
   text-align: center;
 }
 
+.message-dialog-text {
+  white-space: pre-line;
+  line-height: 1.6;
+  margin: 0 0 20px;
+  font-family: var(--body);
+}
+
 .stock-confirm-message {
   font-family: var(--display);
   font-weight: 900;
