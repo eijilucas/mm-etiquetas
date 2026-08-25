@@ -674,25 +674,6 @@ async function refreshKpis() {
   document.getElementById("kpiFailed").textContent = processing.orders.filter((o) => o.status === "failed").length;
 }
 
-// Best-effort — the backend returns balance: null when it can't read the
-// wallet (e.g. missing API permission), so the banner just stays hidden
-// instead of showing a false alarm.
-async function refreshBalance() {
-  const banner = document.getElementById("balanceBanner");
-  try {
-    const { balance, lowBalanceThreshold } = await api("/balance");
-    if (balance == null || balance >= lowBalanceThreshold) {
-      banner.style.display = "none";
-      return;
-    }
-    banner.textContent = "⚠️ Saldo baixo na Melhor Envio. Adicione crédito para não travar a emissão de etiquetas.";
-    banner.style.display = "block";
-  } catch (error) {
-    console.error(error);
-    banner.style.display = "none";
-  }
-}
-
 function setupTabs() {
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -918,7 +899,7 @@ function setupStockConfirmDialog() {
 
 async function loadAll() {
   try {
-    await Promise.all([loadPending(), loadProcessing(), loadHeld(), loadManualTracking(), refreshKpis(), refreshBalance()]);
+    await Promise.all([loadPending(), loadProcessing(), loadHeld(), loadManualTracking(), refreshKpis()]);
   } catch (error) {
     console.error(error);
   }

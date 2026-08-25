@@ -243,13 +243,6 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
       return json({ previews });
     }
 
-    // Best-effort wallet balance for the low-balance banner — fetchAccountBalance
-    // itself never throws (see melhorenvio.ts), so this can't 500 the panel.
-    if (req.method === "GET" && segments[0] === "balance") {
-      const balance = await fetchAccountBalance(config);
-      return json({ balance, lowBalanceThreshold: config.melhorEnvio.lowBalanceThreshold });
-    }
-
     // Explicit manual reversal is the only way a held order re-enters pending_approval.
     if (req.method === "POST" && segments[0] === "revert") {
       const body = (await req.json().catch(() => ({}))) as { ids?: string[] };
