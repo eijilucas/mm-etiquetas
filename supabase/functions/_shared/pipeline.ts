@@ -437,6 +437,48 @@ async function handlePipelineFailure(
   );
 }
 
+// For orders shipped entirely by hand outside this system (e.g. #3290,
+// where the CEP our pipeline rejected made Vitor just buy the label
+// directly on Melhor Envio's site) — there's no melhor_envio_order_id to
+// poll a tracking code from, so this hands a manually-typed code straight
+// to Shopify instead of requiring the order to have gone through any of the
+// earlier pipeline steps. Works from any non-terminal status for exactly
+// that reason: these orders may be stuck in pending_approval, held, or
+// failed depending on where they fell out of the normal flow.
+export async function manualTrackingSync(
+  supabase: SupabaseClient,
+  config: AppConfig,
+  orderShippingId: string,
+  trackingCode: string,
+): Promise<void> {
+  const order = await fetchOrder(supabase, orderShippingId);
+  if (order.status === "tracking_synced") {
+    throw new Error("Pedido ja esta com rastreio sincronizado");
+  }
+  const store = getStoreByKey(config, order.store_key);
+  if (!store) {
+    throw new Error(`No Shopify store configured for storeKey "${order.store_key}"`);
+  }
+
+  const fulfillment = await createFulfillment(store, {
+    shopifyOrderGraphqlId: order.shopify_graphql_id ?? `gid://shopify/Order/${order.shopify_order_id}`,
+    trackingInfo: {
+      number: trackingCode,
+      company: "Melhor Envio",
+      url: config.melhorEnvio.trackingUrl,
+    },
+    notifyCustomer: true,
+  });
+
+  log({ orderShippingId: order.id, fulfillmentId: fulfillment.fulfillmentId }, "pipeline_manual_tracking_synced");
+  await updateOrder(supabase, order.id, {
+    tracking_code: trackingCode,
+    shopify_fulfillment_id: fulfillment.fulfillmentId,
+    status: "tracking_synced",
+    last_error: null,
+  });
+}
+
 export async function cancelOrderLabel(
   supabase: SupabaseClient,
   config: AppConfig,

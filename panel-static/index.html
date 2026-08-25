@@ -59,6 +59,7 @@
       <button class="tab-btn" data-tab="released">Liberados</button>
       <button class="tab-btn" data-tab="posted">Postados</button>
       <button class="tab-btn" data-tab="held">Em espera (held)</button>
+      <button class="tab-btn" data-tab="manual-tracking">Rastreio manual</button>
     </div>
 
     <section class="tab-panel active" id="tab-pending">
@@ -158,6 +159,30 @@
           <tbody id="heldTableBody"></tbody>
         </table>
         <div class="empty-state" id="heldEmpty" style="display:none;">Nenhum pedido em espera.</div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-manual-tracking">
+      <div class="card">
+        <div class="toolbar">
+          <input type="text" class="text-input" id="manualTrackingSearch" placeholder="Buscar por numero do pedido ou cliente" />
+          <button class="btn" id="refreshManualTrackingBtn">Atualizar</button>
+        </div>
+        <p class="hint-text">Para pedidos cuja etiqueta foi comprada fora do sistema (direto na Melhor Envio) — cole o codigo de rastreio aqui pra notificar o cliente na Shopify.</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Pedido</th>
+              <th>Loja</th>
+              <th>Cliente</th>
+              <th>Status</th>
+              <th>Codigo de rastreio</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="manualTrackingTableBody"></tbody>
+        </table>
+        <div class="empty-state" id="manualTrackingEmpty" style="display:none;">Nenhum pedido encontrado.</div>
       </div>
     </section>
   </main>

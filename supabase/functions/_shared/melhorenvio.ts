@@ -341,9 +341,18 @@ export async function fetchTrackingBatch(config: AppConfig, orderIds: string[]):
   );
 }
 
+// `tracking` (the raw carrier-native code) really can stay null for a long
+// time for some carriers — confirmed live on a Jadlog shipment sitting at
+// status "released" (not yet posted) where `tracking` was null but
+// `melhorenvio_tracking` already held a real, immediately-trackable code
+// ("ME262CMAHI0BR", generated right after label creation, resolvable at
+// melhorrastreio.com.br). Only reading `tracking` meant those orders threw
+// TRACKING_NOT_YET_AVAILABLE_ERROR and got auto-retried every 15min forever
+// — falling back to melhorenvio_tracking fixes that entire failure class.
 export async function fetchTrackingByOrderId(config: AppConfig, orderId: string): Promise<string | undefined> {
   const response = await fetchTrackingBatch(config, [orderId]);
-  return response[orderId]?.tracking;
+  const entry = response[orderId];
+  return entry?.tracking || entry?.melhorenvio_tracking || undefined;
 }
 
 // Calls /me/shipment/calculate with the same from/to/products/volumes and

@@ -378,6 +378,72 @@ async function loadHeld() {
   return orders;
 }
 
+// Candidates for manual tracking entry: any order that hasn't already
+// reached tracking_synced, regardless of which status it fell into — these
+// are orders someone bought a label for by hand outside the pipeline, so
+// they could be stuck anywhere (pending_approval, held, or failed).
+let manualTrackingOrders = [];
+
+async function loadManualTracking() {
+  const [pending, held, processing] = await Promise.all([api("/pending"), api("/held"), api("/processing")]);
+  manualTrackingOrders = [...pending.orders, ...held.orders, ...processing.orders.filter((o) => o.status !== "tracking_synced")];
+  renderManualTrackingRows();
+  return manualTrackingOrders;
+}
+
+function renderManualTrackingRows() {
+  const tbody = document.getElementById("manualTrackingTableBody");
+  const empty = document.getElementById("manualTrackingEmpty");
+  const query = document.getElementById("manualTrackingSearch").value.trim().toLowerCase();
+  const visible = manualTrackingOrders.filter((order) => {
+    if (!query) return true;
+    const haystack = `${order.shopifyOrderNumber ?? order.shopifyOrderId} ${order.customerName ?? ""}`.toLowerCase();
+    return haystack.includes(query);
+  });
+
+  tbody.innerHTML = "";
+  empty.style.display = visible.length === 0 ? "block" : "none";
+
+  for (const order of visible) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${orderRefHtml(order)}</td>
+      <td>${storeCell(order)}</td>
+      <td>${order.customerName ?? "-"}</td>
+      <td>${pill(order.status)}</td>
+      <td><input type="text" class="text-input" data-tracking-input="${order.id}" placeholder="Codigo de rastreio" /></td>
+      <td><button class="btn" data-send-tracking="${order.id}">Enviar</button></td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  tbody.querySelectorAll("[data-send-tracking]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.sendTracking;
+      const input = tbody.querySelector(`[data-tracking-input="${id}"]`);
+      const trackingCode = input.value.trim();
+      if (!trackingCode) {
+        alert("Informe o codigo de rastreio.");
+        return;
+      }
+      btn.disabled = true;
+      try {
+        await api(`/${id}/tracking`, { method: "POST", body: JSON.stringify({ trackingCode }) });
+        await loadManualTracking();
+        await refreshKpis();
+      } catch (error) {
+        alert(`Erro ao enviar rastreio: ${error.message}`);
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+function setupManualTracking() {
+  document.getElementById("manualTrackingSearch").addEventListener("input", renderManualTrackingRows);
+  document.getElementById("refreshManualTrackingBtn").addEventListener("click", loadManualTracking);
+}
+
 async function refreshKpis() {
   const [pending, processing, held] = await Promise.all([
     api("/pending"),
@@ -577,7 +643,7 @@ function setupStockConfirmDialog() {
 
 async function loadAll() {
   try {
-    await Promise.all([loadPending(), loadProcessing(), loadHeld(), refreshKpis(), refreshBalance()]);
+    await Promise.all([loadPending(), loadProcessing(), loadHeld(), loadManualTracking(), refreshKpis(), refreshBalance()]);
   } catch (error) {
     console.error(error);
   }
@@ -587,6 +653,7 @@ setupTabs();
 setupLogin();
 setupHoldDialog();
 setupBulkPrint();
+setupManualTracking();
 setupCancelLabelDialog();
 setupStockConfirmDialog();
 setupToolbar();

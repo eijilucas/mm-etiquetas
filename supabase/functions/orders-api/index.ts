@@ -3,7 +3,7 @@ import type { AppConfig } from "../_shared/config.ts";
 import { getAuthenticatedUser } from "../_shared/auth.ts";
 import { createServiceClient, toApiShape } from "../_shared/db.ts";
 import type { OrderShippingRow, ShippingStatus } from "../_shared/db.ts";
-import { runShippingPipeline, cancelOrderLabel } from "../_shared/pipeline.ts";
+import { runShippingPipeline, cancelOrderLabel, manualTrackingSync } from "../_shared/pipeline.ts";
 import { runReconciliation } from "../_shared/reconciliation.ts";
 import { fetchAccountBalance, fetchDeclarationPdfUrl } from "../_shared/melhorenvio.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
@@ -22,6 +22,7 @@ export interface Deps {
   supabase?: SupabaseClient;
   runPipeline?: typeof runShippingPipeline;
   cancelOrder?: typeof cancelOrderLabel;
+  manualTracking?: typeof manualTrackingSync;
 }
 
 // The panel is hosted on a separate static-hosting domain (Supabase Edge
@@ -81,6 +82,7 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
   const supabase = deps.supabase ?? createServiceClient(config);
   const runPipeline = deps.runPipeline ?? runShippingPipeline;
   const cancelOrder = deps.cancelOrder ?? cancelOrderLabel;
+  const manualTracking = deps.manualTracking ?? manualTrackingSync;
 
   try {
     if (req.method === "GET" && segments[0] === "pending") {
@@ -242,6 +244,24 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
         return json({ error: `cannot cancel order in status ${order.status}` }, 400);
       }
       await cancelOrder(supabase, config, id, body.reason);
+      return json({ ok: true });
+    }
+
+    // For a shipment purchased entirely outside this system (e.g. the CEP
+    // our pipeline rejected, so it got bought by hand on Melhor Envio's
+    // site) — hands a manually-typed tracking code straight to Shopify.
+    // Errors are surfaced with their real message (not the generic 500 the
+    // outer catch below returns) since a human is acting on this directly.
+    if (req.method === "POST" && segments[1] === "tracking") {
+      const id = segments[0];
+      const body = (await req.json().catch(() => ({}))) as { trackingCode?: string };
+      const trackingCode = body.trackingCode?.trim();
+      if (!trackingCode) return json({ error: "tracking_code_required" }, 400);
+      try {
+        await manualTracking(supabase, config, id, trackingCode);
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : "internal_error" }, 400);
+      }
       return json({ ok: true });
     }
 
