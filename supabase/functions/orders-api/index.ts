@@ -3,7 +3,7 @@ import type { AppConfig } from "../_shared/config.ts";
 import { getAuthenticatedUser } from "../_shared/auth.ts";
 import { createServiceClient, toApiShape } from "../_shared/db.ts";
 import type { OrderShippingRow, ShippingStatus } from "../_shared/db.ts";
-import { runShippingPipeline, cancelOrderLabel, manualTrackingSync, estimateShippingCost } from "../_shared/pipeline.ts";
+import { runShippingPipeline, cancelOrderLabel, manualTrackingSync, checkApprovalIssues } from "../_shared/pipeline.ts";
 import { runReconciliation } from "../_shared/reconciliation.ts";
 import { fetchAccountBalance, fetchDeclarationPdfUrl, fetchTrackingBatch } from "../_shared/melhorenvio.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
@@ -133,15 +133,19 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
 
       let estimatedTotal = 0;
       let unestimated = 0;
+      const problems: { id: string; orderNumber: string | null; blocking: string[]; warnings: string[] }[] = [];
       for (const order of (orders ?? []) as OrderShippingRow[]) {
-        const price = await estimateShippingCost(config, order);
+        const { price, blocking, warnings } = await checkApprovalIssues(config, order);
         if (price == null) unestimated += 1;
         else estimatedTotal += price;
+        if (blocking.length > 0 || warnings.length > 0) {
+          problems.push({ id: order.id, orderNumber: order.shopify_order_number, blocking, warnings });
+        }
       }
 
       const balance = await fetchAccountBalance(config);
       const sufficient = balance == null ? null : balance >= estimatedTotal;
-      return json({ estimatedTotal, unestimated, balance, sufficient });
+      return json({ estimatedTotal, unestimated, balance, sufficient, problems });
     }
 
     if (req.method === "POST" && segments[0] === "approve") {

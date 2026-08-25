@@ -852,9 +852,35 @@ function setupToolbar() {
         );
         return;
       }
-      if (preview.unestimated > 0) {
-        console.warn(`${preview.unestimated} pedido(s) nao puderam ter o frete estimado (entram no calculo mesmo assim).`);
+
+      const problems = preview.problems || [];
+      const blockingList = problems.filter((p) => p.blocking.length > 0);
+      const warningList = problems.filter((p) => p.blocking.length === 0 && p.warnings.length > 0);
+
+      // Missing CPF/CNPJ always fails the real purchase (no fallback exists
+      // for it, unlike a missing quote) — refuse the whole batch rather
+      // than approve orders that are guaranteed to land in "Falhou".
+      if (blockingList.length > 0) {
+        const lines = blockingList.map((p) => `#${p.orderNumber ?? p.id}: ${p.blocking.join("; ")}`);
+        await showAlert(
+          `${blockingList.length} pedido(s) certamente vao falhar se aprovados agora:\n\n${lines.join("\n")}\n\n` +
+            `Corrija esses pedidos (ou tire da selecao) antes de emitir.`,
+        );
+        return;
       }
+
+      // A missing quote is a softer signal — createCartStep still falls back
+      // to the default service, so it might still work. Warn but let a
+      // human decide instead of blocking outright.
+      if (warningList.length > 0) {
+        const lines = warningList.map((p) => `#${p.orderNumber ?? p.id}: ${p.warnings.join("; ")}`);
+        const proceed = await showConfirm(
+          `${warningList.length} pedido(s) sem cotacao de frete confirmada:\n\n${lines.join("\n")}\n\n` +
+            `Podem cair no frete padrao ou falhar. Continuar mesmo assim?`,
+        );
+        if (!proceed) return;
+      }
+
       document.getElementById("stockConfirmDialog").showModal();
     } catch (error) {
       // Best-effort check — if the preview itself fails (e.g. Melhor Envio

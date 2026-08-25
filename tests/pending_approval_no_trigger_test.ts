@@ -374,7 +374,7 @@ function makePreviewOrder(id: string, orderNumber: string) {
     shopify_order_id: orderNumber,
     status: "pending_approval",
     items: [{ shopifyLineItemId: 1, title: "Camiseta", variantTitle: null, sku: "CAM-1", quantity: 1, unitPrice: "89.90", grams: 300 }],
-    shipping_address: { zip: "01310-930", address1: "Av. Paulista, 1000", city: "Sao Paulo", province_code: "SP" },
+    shipping_address: { zip: "01310-930", address1: "Av. Paulista, 1000", city: "Sao Paulo", province_code: "SP", document: "12345678900" },
   };
 }
 
@@ -400,7 +400,7 @@ Deno.test("approve-preview flags an insufficient balance for the batch total", a
     body: JSON.stringify({ ids: ["order-p1", "order-p2"] }),
   });
 
-  let json: { estimatedTotal: number; unestimated: number; balance: number | null; sufficient: boolean | null };
+  let json: { estimatedTotal: number; unestimated: number; balance: number | null; sufficient: boolean | null; problems: unknown[] };
   try {
     // deno-lint-ignore no-explicit-any
     const res = await handleOrdersApi(req, { config, supabase: fake as any });
@@ -410,7 +410,7 @@ Deno.test("approve-preview flags an insufficient balance for the batch total", a
     globalThis.fetch = original;
   }
 
-  assertEquals(json, { estimatedTotal: 300, unestimated: 0, balance: 200, sufficient: false });
+  assertEquals(json, { estimatedTotal: 300, unestimated: 0, balance: 200, sufficient: false, problems: [] });
 });
 
 Deno.test("approve-preview reports sufficient when the balance covers the estimated total", async () => {
@@ -435,7 +435,7 @@ Deno.test("approve-preview reports sufficient when the balance covers the estima
     body: JSON.stringify({ ids: ["order-p1"] }),
   });
 
-  let json: { estimatedTotal: number; unestimated: number; balance: number | null; sufficient: boolean | null };
+  let json: { estimatedTotal: number; unestimated: number; balance: number | null; sufficient: boolean | null; problems: unknown[] };
   try {
     // deno-lint-ignore no-explicit-any
     const res = await handleOrdersApi(req, { config, supabase: fake as any });
@@ -445,7 +445,61 @@ Deno.test("approve-preview reports sufficient when the balance covers the estima
     globalThis.fetch = original;
   }
 
-  assertEquals(json, { estimatedTotal: 24.5, unestimated: 0, balance: 500, sufficient: true });
+  assertEquals(json, { estimatedTotal: 24.5, unestimated: 0, balance: 500, sufficient: true, problems: [] });
+});
+
+Deno.test("approve-preview flags a missing recipient document as blocking, and a missing quote as a warning", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push(
+    // No document anywhere, and the GraphQL lookup also comes back empty —
+    // this one is a guaranteed failure if approved as-is.
+    { ...makePreviewOrder("order-nodoc", "8003"), shipping_address: { zip: "01310-930", address1: "Av. Paulista, 1000", city: "Sao Paulo", province_code: "SP" } },
+    // Has a document, but no carrier serves this CEP — softer signal only.
+    { ...makePreviewOrder("order-noquote", "8004"), shipping_address: { zip: "99999-999", address1: "Rua X", city: "Y", province_code: "Z", document: "12345678900" } },
+  );
+
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    const body = init?.body ? JSON.parse(init.body as string) : undefined;
+    if (url.includes("/me/shipment/calculate")) {
+      const zip = body?.to?.postal_code;
+      if (zip === "99999999") return new Response(JSON.stringify([{ id: 1, name: "PAC", price: "0", error: "CEP nao atendido" }]), { status: 200, headers: { "Content-Type": "application/json" } });
+      return new Response(JSON.stringify([{ id: 1, name: "PAC", price: "24.50" }]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url.includes("/me/balance")) {
+      return new Response(JSON.stringify({ balance: 500, reserved: 0, debts: 0 }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url.includes("/admin/oauth/access_token")) {
+      return new Response(JSON.stringify({ access_token: "shpat_test", scope: "read_orders", expires_in: 86399 }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url.includes("/graphql.json") && typeof body?.query === "string" && body.query.includes("GetLocalizationExtensions")) {
+      return new Response(JSON.stringify({ data: { order: { localizationExtensions: { edges: [] } } } }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    throw new Error(`Unexpected fetch call: ${url}`);
+  }) as typeof fetch;
+
+  const req = new Request("http://localhost/functions/v1/orders-api/approve-preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+    body: JSON.stringify({ ids: ["order-nodoc", "order-noquote"] }),
+  });
+
+  let json: { problems: { id: string; orderNumber: string | null; blocking: string[]; warnings: string[] }[] };
+  try {
+    // deno-lint-ignore no-explicit-any
+    const res = await handleOrdersApi(req, { config, supabase: fake as any });
+    assertEquals(res.status, 200);
+    json = await res.json();
+  } finally {
+    globalThis.fetch = original;
+  }
+
+  const nodoc = json.problems.find((p) => p.id === "order-nodoc");
+  const noquote = json.problems.find((p) => p.id === "order-noquote");
+  assertEquals(nodoc?.blocking.length, 1);
+  assertEquals(noquote?.blocking.length, 0);
+  assertEquals(noquote?.warnings.length, 1);
 });
 
 Deno.test("archives a held order so it drops out of every panel tab", async () => {

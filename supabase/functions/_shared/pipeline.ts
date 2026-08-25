@@ -252,6 +252,41 @@ export async function estimateShippingCost(config: AppConfig, order: OrderShippi
   }
 }
 
+// Surfaces the two failure classes that are actually predictable ahead of
+// approval (unlike a checkout-time 500 or Melhor Envio going down, which
+// can't be front-run): a missing recipient CPF/CNPJ — buildCartPayload's
+// toAddress always throws on this, no fallback exists — and no valid
+// shipping quote, which is a softer signal since createCartStep still
+// falls back to the fixed default service either way, so it doesn't
+// guarantee a failure the way a missing document does.
+export async function checkApprovalIssues(
+  config: AppConfig,
+  order: OrderShippingRow,
+): Promise<{ price: number | null; blocking: string[]; warnings: string[] }> {
+  const blocking: string[] = [];
+  const warnings: string[] = [];
+
+  const price = await estimateShippingCost(config, order);
+  if (price == null) warnings.push("Sem cotacao de frete confirmada para o CEP/endereco (pode cair no frete padrao ou falhar)");
+
+  const shippingAddress = order.shipping_address as Record<string, unknown>;
+  if (!shippingAddress.document) {
+    let hasDocument = false;
+    const store = getStoreByKey(config, order.store_key);
+    if (store) {
+      const graphqlId = order.shopify_graphql_id ?? `gid://shopify/Order/${order.shopify_order_id}`;
+      try {
+        hasDocument = !!(await fetchRecipientTaxCredential(store, graphqlId));
+      } catch (error) {
+        log({ orderShippingId: order.id, err: String(error), level: "warn" }, "check_approval_document_lookup_failed");
+      }
+    }
+    if (!hasDocument) blocking.push("CPF/CNPJ do destinatario ausente — a compra do frete vai falhar");
+  }
+
+  return { price, blocking, warnings };
+}
+
 async function fetchOrder(supabase: SupabaseClient, id: string): Promise<OrderShippingRow> {
   const { data, error } = await supabase.from("orders_shipping").select("*").eq("id", id).single();
   if (error) throw error;
