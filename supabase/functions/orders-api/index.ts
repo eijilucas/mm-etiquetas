@@ -97,9 +97,14 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
     }
 
     if (req.method === "GET" && segments[0] === "processing") {
+      // This list only shrinks via /archive, so it grows without bound over
+      // time — trimmed to the columns Liberados/Postados/Rastreio actually
+      // render (drops items/shipping_address, the two heaviest jsonb columns).
       const { data, error } = await supabase
         .from("orders_shipping")
-        .select("*")
+        .select(
+          "id, store_key, shopify_order_id, shopify_order_number, customer_name, currency, status, shipping_price, tracking_code, label_pdf_url, last_error, melhor_envio_order_id, updated_at, posted_at, posted_by",
+        )
         .in("status", PROCESSING_STATUSES)
         .order("updated_at", { ascending: false });
       if (error) throw error;
@@ -109,7 +114,7 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
     if (req.method === "GET" && segments[0] === "held") {
       const { data, error } = await supabase
         .from("orders_shipping")
-        .select("*")
+        .select("id, store_key, shopify_order_id, shopify_order_number, customer_name, held_reason, held_at")
         .eq("status", "held")
         .order("held_at", { ascending: false });
       if (error) throw error;

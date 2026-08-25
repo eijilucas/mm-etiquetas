@@ -477,8 +477,11 @@ function updateManualTrackingBulkButtons() {
   document.getElementById("bulkArchiveManualBtn").disabled = selectedManualTracking.size === 0;
 }
 
-async function loadManualTracking() {
-  const { orders } = await api("/processing");
+// processingList lets a caller that already fetched /processing this tick
+// (loadAll, tab-switch) reuse it instead of fetching it again; omit it after
+// an action (send/archive) to force a fresh read of what actually changed.
+async function loadManualTracking(processingList) {
+  const orders = processingList ?? (await api("/processing")).orders;
   manualTrackingOrders = orders.filter((o) => o.status === "tracking_ready" || o.status === "failed");
 
   // Same prune-not-clear reasoning as the other tabs: this reloads every
@@ -683,10 +686,12 @@ function setupTabs() {
       document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
       btn.classList.add("active");
       document.getElementById(`tab-${btn.dataset.tab}`).classList.add("active");
-      // Held/Rastreio are only kept fresh by the background poll while
-      // their tab is active (see loadAll), so fetch once on first switch.
+      // Held is only kept fresh by the background poll while its tab is
+      // active (see loadAll), so fetch once on first switch. Rastreio reuses
+      // whatever /processing already has cached (refreshed every tick
+      // regardless of tab) instead of fetching it a second time.
       if (btn.dataset.tab === "held") loadHeld();
-      if (btn.dataset.tab === "manual-tracking") loadManualTracking();
+      if (btn.dataset.tab === "manual-tracking") loadManualTracking(processingOrders);
     });
   });
 }
@@ -912,8 +917,10 @@ async function loadAll() {
     const activeTab = document.querySelector(".tab-btn.active")?.dataset.tab;
     const tasks = [loadPending(), loadProcessing()];
     if (activeTab === "held") tasks.push(loadHeld());
-    if (activeTab === "manual-tracking") tasks.push(loadManualTracking());
     const [pendingList, processingList] = await Promise.all(tasks);
+    // Depends on processingList, so it runs after — reuses it instead of
+    // fetching /processing a second time.
+    if (activeTab === "manual-tracking") await loadManualTracking(processingList);
     renderKpis(pendingList, processingList);
   } catch (error) {
     console.error(error);
