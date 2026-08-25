@@ -785,9 +785,38 @@ function setupToolbar() {
     updateBulkButtons();
   });
 
-  document.getElementById("approveBtn").addEventListener("click", () => {
+  document.getElementById("approveBtn").addEventListener("click", async () => {
     if (selectedPending.size === 0) return;
-    document.getElementById("stockConfirmDialog").showModal();
+    const btn = document.getElementById("approveBtn");
+    btn.disabled = true;
+    try {
+      const preview = await api("/approve-preview", {
+        method: "POST",
+        body: JSON.stringify({ ids: Array.from(selectedPending) }),
+      });
+      if (preview.sufficient === false) {
+        const shortfall = preview.estimatedTotal - preview.balance;
+        alert(
+          `Saldo insuficiente na Melhor Envio para emitir essas etiquetas.\n\n` +
+            `Frete estimado: ${formatCurrency(preview.estimatedTotal, "BRL")}\n` +
+            `Saldo disponivel: ${formatCurrency(preview.balance, "BRL")}\n` +
+            `Falta: ${formatCurrency(shortfall, "BRL")}\n\n` +
+            `Adicione credito antes de continuar.`,
+        );
+        return;
+      }
+      if (preview.unestimated > 0) {
+        console.warn(`${preview.unestimated} pedido(s) nao puderam ter o frete estimado (entram no calculo mesmo assim).`);
+      }
+      document.getElementById("stockConfirmDialog").showModal();
+    } catch (error) {
+      // Best-effort check — if the preview itself fails (e.g. Melhor Envio
+      // down), don't block approving; just skip straight to the stock dialog.
+      console.error("approve-preview failed, proceeding without it:", error);
+      document.getElementById("stockConfirmDialog").showModal();
+    } finally {
+      btn.disabled = false;
+    }
   });
 
   document.getElementById("refreshPendingBtn").addEventListener("click", loadPending);

@@ -3,7 +3,7 @@ import type { AppConfig } from "../_shared/config.ts";
 import { getAuthenticatedUser } from "../_shared/auth.ts";
 import { createServiceClient, toApiShape } from "../_shared/db.ts";
 import type { OrderShippingRow, ShippingStatus } from "../_shared/db.ts";
-import { runShippingPipeline, cancelOrderLabel, manualTrackingSync } from "../_shared/pipeline.ts";
+import { runShippingPipeline, cancelOrderLabel, manualTrackingSync, estimateShippingCost } from "../_shared/pipeline.ts";
 import { runReconciliation } from "../_shared/reconciliation.ts";
 import { fetchAccountBalance, fetchDeclarationPdfUrl, fetchTrackingBatch } from "../_shared/melhorenvio.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
@@ -114,6 +114,34 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
         .order("held_at", { ascending: false });
       if (error) throw error;
       return json({ orders: (data as OrderShippingRow[]).map(toApiShape) });
+    }
+
+    // Pre-flight for a batch approval: estimates each selected order's
+    // cheapest shipping quote (the same /me/shipment/calculate call the
+    // real purchase will make) and compares the total against the live
+    // wallet balance — so a batch that can't be fully paid for is caught
+    // here, before any order is marked approved, instead of Melhor Envio
+    // rejecting purchases one by one mid-batch with an unhelpful empty-body
+    // 422 (see the balance-exhaustion incident this was built to prevent).
+    if (req.method === "POST" && segments[0] === "approve-preview") {
+      const body = (await req.json().catch(() => ({}))) as { ids?: string[] };
+      if (!Array.isArray(body.ids) || body.ids.length === 0) {
+        return json({ error: "ids_required" }, 400);
+      }
+      const { data: orders, error } = await supabase.from("orders_shipping").select("*").in("id", body.ids);
+      if (error) throw error;
+
+      let estimatedTotal = 0;
+      let unestimated = 0;
+      for (const order of (orders ?? []) as OrderShippingRow[]) {
+        const price = await estimateShippingCost(config, order);
+        if (price == null) unestimated += 1;
+        else estimatedTotal += price;
+      }
+
+      const balance = await fetchAccountBalance(config);
+      const sufficient = balance == null ? null : balance >= estimatedTotal;
+      return json({ estimatedTotal, unestimated, balance, sufficient });
     }
 
     if (req.method === "POST" && segments[0] === "approve") {

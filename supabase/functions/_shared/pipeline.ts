@@ -7,7 +7,9 @@ import type { OrderShippingRow } from "./db.ts";
 import {
   addToCart,
   buildFromAddress,
+  calculateShipping,
   checkoutCart,
+  fetchAccountBalance,
   fetchTrackingByOrderId,
   generateLabel,
   InsufficientBalanceError,
@@ -194,6 +196,60 @@ export async function buildCartPayload(config: AppConfig, order: OrderShippingRo
 
   const service = await pickCheapestServiceId(config, base, order.shopify_order_id);
   return { service, ...base };
+}
+
+// Same volume/insurance/address inputs as buildCartPayload, but a plain
+// price quote (/me/shipment/calculate) instead of actually building a cart
+// — used to preview the cost of a batch of orders before approving any of
+// them, so it deliberately skips the live recipient-CPF fetch (calculate
+// doesn't need it, and a pending_approval batch can be dozens of orders —
+// no need to pay that extra Shopify round-trip per order just for an
+// estimate). Best-effort: any failure (bad CEP, Melhor Envio down, no valid
+// quote) returns null rather than throwing, so one bad order can't block
+// previewing the rest of the batch.
+export async function estimateShippingCost(config: AppConfig, order: OrderShippingRow): Promise<number | null> {
+  try {
+    const items = order.items as unknown as OrderItemSnapshot[];
+    const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
+    if (totalQuantity <= 0) return null;
+    const profile = totalQuantity <= 1 ? config.melhorEnvio.volumeProfile.single : config.melhorEnvio.volumeProfile.multiple;
+    const declaredValuePerItem = config.melhorEnvio.declaredValuePerItem;
+
+    const shippingAddress = order.shipping_address as Record<string, unknown>;
+    const postalCode = String(shippingAddress.zip ?? "").replace(/\D/g, "");
+    if (!postalCode) return null;
+
+    const quotes = await calculateShipping(config, {
+      from: buildFromAddress(config),
+      to: {
+        postal_code: postalCode,
+        address: String(shippingAddress.address1 ?? ""),
+        number: "0",
+        district: "N/A",
+        city: String(shippingAddress.city ?? ""),
+        state_abbr: String(shippingAddress.province_code ?? ""),
+      },
+      products: items.map((item) => ({ name: item.title, quantity: item.quantity, unitary_value: declaredValuePerItem })),
+      volumes: [{ height: profile.heightCm, width: profile.widthCm, length: profile.lengthCm, weight: profile.weightKg }],
+      options: { insurance_value: declaredValuePerItem * totalQuantity },
+    });
+
+    const allowed = config.melhorEnvio.allowedServiceIds;
+    const valid = quotes.filter((quote) => {
+      if (quote.error) return false;
+      const price = Number(quote.price);
+      if (!Number.isFinite(price) || price <= 0) return false;
+      if (allowed.length > 0 && !allowed.includes(quote.id)) return false;
+      return true;
+    });
+    if (valid.length === 0) return null;
+
+    const cheapest = valid.reduce((min, quote) => (Number(quote.price) < Number(min.price) ? quote : min));
+    return Number(cheapest.price);
+  } catch (error) {
+    log({ orderShippingId: order.id, err: String(error), level: "warn" }, "estimate_shipping_cost_failed");
+    return null;
+  }
 }
 
 async function fetchOrder(supabase: SupabaseClient, id: string): Promise<OrderShippingRow> {

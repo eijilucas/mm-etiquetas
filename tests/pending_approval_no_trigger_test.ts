@@ -367,6 +367,87 @@ Deno.test("tracking-preview batches one Melhor Envio call and applies the melhor
   assertEquals(json.previews, { "order-a": "AA123456785BR", "order-b": "ME262CMAHI0BR" });
 });
 
+function makePreviewOrder(id: string, orderNumber: string) {
+  return {
+    id,
+    store_key: "test",
+    shopify_order_id: orderNumber,
+    status: "pending_approval",
+    items: [{ shopifyLineItemId: 1, title: "Camiseta", variantTitle: null, sku: "CAM-1", quantity: 1, unitPrice: "89.90", grams: 300 }],
+    shipping_address: { zip: "01310-930", address1: "Av. Paulista, 1000", city: "Sao Paulo", province_code: "SP" },
+  };
+}
+
+Deno.test("approve-preview flags an insufficient balance for the batch total", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push(makePreviewOrder("order-p1", "8001"), makePreviewOrder("order-p2", "8002"));
+
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("/me/shipment/calculate")) {
+      return new Response(JSON.stringify([{ id: 1, name: "PAC", price: "150.00" }]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url.includes("/me/balance")) {
+      return new Response(JSON.stringify({ balance: 200, reserved: 0, debts: 0 }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    throw new Error(`Unexpected fetch call: ${url}`);
+  }) as typeof fetch;
+
+  const req = new Request("http://localhost/functions/v1/orders-api/approve-preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+    body: JSON.stringify({ ids: ["order-p1", "order-p2"] }),
+  });
+
+  let json: { estimatedTotal: number; unestimated: number; balance: number | null; sufficient: boolean | null };
+  try {
+    // deno-lint-ignore no-explicit-any
+    const res = await handleOrdersApi(req, { config, supabase: fake as any });
+    assertEquals(res.status, 200);
+    json = await res.json();
+  } finally {
+    globalThis.fetch = original;
+  }
+
+  assertEquals(json, { estimatedTotal: 300, unestimated: 0, balance: 200, sufficient: false });
+});
+
+Deno.test("approve-preview reports sufficient when the balance covers the estimated total", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push(makePreviewOrder("order-p1", "8001"));
+
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("/me/shipment/calculate")) {
+      return new Response(JSON.stringify([{ id: 1, name: "PAC", price: "24.50" }]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url.includes("/me/balance")) {
+      return new Response(JSON.stringify({ balance: 500, reserved: 0, debts: 0 }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    throw new Error(`Unexpected fetch call: ${url}`);
+  }) as typeof fetch;
+
+  const req = new Request("http://localhost/functions/v1/orders-api/approve-preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+    body: JSON.stringify({ ids: ["order-p1"] }),
+  });
+
+  let json: { estimatedTotal: number; unestimated: number; balance: number | null; sufficient: boolean | null };
+  try {
+    // deno-lint-ignore no-explicit-any
+    const res = await handleOrdersApi(req, { config, supabase: fake as any });
+    assertEquals(res.status, 200);
+    json = await res.json();
+  } finally {
+    globalThis.fetch = original;
+  }
+
+  assertEquals(json, { estimatedTotal: 24.5, unestimated: 0, balance: 500, sufficient: true });
+});
+
 Deno.test("archives a held order so it drops out of every panel tab", async () => {
   const fake = makeFakeSupabase();
   fake.table("orders_shipping").push({
