@@ -5,7 +5,7 @@ import { createServiceClient, toApiShape } from "../_shared/db.ts";
 import type { OrderShippingRow, ShippingStatus } from "../_shared/db.ts";
 import { runShippingPipeline, cancelOrderLabel, manualTrackingSync } from "../_shared/pipeline.ts";
 import { runReconciliation } from "../_shared/reconciliation.ts";
-import { fetchAccountBalance, fetchDeclarationPdfUrl } from "../_shared/melhorenvio.ts";
+import { fetchAccountBalance, fetchDeclarationPdfUrl, fetchTrackingBatch } from "../_shared/melhorenvio.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
 const PROCESSING_STATUSES: ShippingStatus[] = [
@@ -185,6 +185,29 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
         .in("status", PROCESSING_STATUSES);
       if (error) throw error;
       return json({ ok: true });
+    }
+
+    // Read-only preview for the Rastreio manual tab: batch-fetches whatever
+    // tracking code Melhor Envio already has for each order (same fallback
+    // as syncTrackingStep — see melhorenvio.ts) so the packer can just hit
+    // Enviar instead of typing the code in by hand.
+    if (req.method === "POST" && segments[0] === "tracking-preview") {
+      const body = (await req.json().catch(() => ({}))) as { ids?: string[] };
+      if (!Array.isArray(body.ids) || body.ids.length === 0) return json({ previews: {} });
+      const { data: orders, error } = await supabase
+        .from("orders_shipping")
+        .select("id, melhor_envio_order_id")
+        .in("id", body.ids)
+        .not("melhor_envio_order_id", "is", null);
+      if (error) throw error;
+      const rows = (orders ?? []) as { id: string; melhor_envio_order_id: string }[];
+      const tracking = await fetchTrackingBatch(config, rows.map((row) => row.melhor_envio_order_id));
+      const previews: Record<string, string | null> = {};
+      for (const row of rows) {
+        const entry = tracking[row.melhor_envio_order_id];
+        previews[row.id] = entry?.tracking || entry?.melhorenvio_tracking || null;
+      }
+      return json({ previews });
     }
 
     // Best-effort wallet balance for the low-balance banner — fetchAccountBalance

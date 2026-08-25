@@ -318,3 +318,51 @@ Deno.test("rejects orders-api routes without a valid bearer token", async () => 
   const res = await handleOrdersApi(req, { config, supabase: fake as any });
   assertEquals(res.status, 401);
 });
+
+Deno.test("tracking-preview batches one Melhor Envio call and applies the melhorenvio_tracking fallback", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push(
+    { id: "order-a", store_key: "test", shopify_order_id: "6001", status: "label_generated", melhor_envio_order_id: "me-a" },
+    { id: "order-b", store_key: "test", shopify_order_id: "6002", status: "failed", melhor_envio_order_id: "me-b" },
+    // no melhor_envio_order_id yet — must be silently skipped, not error out.
+    { id: "order-c", store_key: "test", shopify_order_id: "6003", status: "cart_created", melhor_envio_order_id: null },
+  );
+
+  let trackingCallCount = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("/me/shipment/tracking")) {
+      trackingCallCount += 1;
+      const body = JSON.parse(init?.body as string);
+      assertEquals(body.orders.sort(), ["me-a", "me-b"]);
+      return new Response(
+        JSON.stringify({
+          "me-a": { id: "me-a", tracking: "AA123456785BR" },
+          "me-b": { id: "me-b", tracking: null, melhorenvio_tracking: "ME262CMAHI0BR" },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    throw new Error(`Unexpected fetch call: ${url}`);
+  }) as typeof fetch;
+
+  const req = new Request("http://localhost/functions/v1/orders-api/tracking-preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+    body: JSON.stringify({ ids: ["order-a", "order-b", "order-c"] }),
+  });
+
+  let json: { previews: Record<string, string | null> };
+  try {
+    // deno-lint-ignore no-explicit-any
+    const res = await handleOrdersApi(req, { config, supabase: fake as any });
+    assertEquals(res.status, 200);
+    json = await res.json();
+  } finally {
+    globalThis.fetch = original;
+  }
+
+  assertEquals(trackingCallCount, 1);
+  assertEquals(json.previews, { "order-a": "AA123456785BR", "order-b": "ME262CMAHI0BR" });
+});

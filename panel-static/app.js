@@ -378,15 +378,27 @@ async function loadHeld() {
   return orders;
 }
 
-// Candidates for manual tracking entry: any order that hasn't already
-// reached tracking_synced, regardless of which status it fell into — these
-// are orders someone bought a label for by hand outside the pipeline, so
-// they could be stuck anywhere (pending_approval, held, or failed).
+// Candidates for the Rastreio manual tab: orders our own pipeline already
+// purchased a label for (melhorEnvioOrderId set) but that haven't synced a
+// tracking code to Shopify yet — e.g. stuck failing every 15min waiting for
+// Melhor Envio to assign one. Pending/held orders never had a label bought
+// at all, so there's nothing to fetch for them; they're excluded on purpose.
 let manualTrackingOrders = [];
+let trackingPreviews = {};
 
 async function loadManualTracking() {
-  const [pending, held, processing] = await Promise.all([api("/pending"), api("/held"), api("/processing")]);
-  manualTrackingOrders = [...pending.orders, ...held.orders, ...processing.orders.filter((o) => o.status !== "tracking_synced")];
+  const { orders } = await api("/processing");
+  manualTrackingOrders = orders.filter((o) => o.status !== "tracking_synced" && o.melhorEnvioOrderId);
+
+  trackingPreviews = {};
+  if (manualTrackingOrders.length > 0) {
+    const { previews } = await api("/tracking-preview", {
+      method: "POST",
+      body: JSON.stringify({ ids: manualTrackingOrders.map((o) => o.id) }),
+    });
+    trackingPreviews = previews;
+  }
+
   renderManualTrackingRows();
   return manualTrackingOrders;
 }
@@ -406,13 +418,14 @@ function renderManualTrackingRows() {
 
   for (const order of visible) {
     const tr = document.createElement("tr");
+    const preview = trackingPreviews[order.id];
     tr.innerHTML = `
       <td>${orderRefHtml(order)}</td>
       <td>${storeCell(order)}</td>
       <td>${order.customerName ?? "-"}</td>
       <td>${pill(order.status)}</td>
-      <td><input type="text" class="text-input" data-tracking-input="${order.id}" placeholder="Codigo de rastreio" /></td>
-      <td><button class="btn" data-send-tracking="${order.id}">Enviar</button></td>
+      <td>${preview ? `<span class="mono-text">${preview}</span>` : `<span class="text-label">Ainda sem codigo</span>`}</td>
+      <td><button class="btn" data-send-tracking="${order.id}" ${preview ? "" : "disabled"}>Enviar</button></td>
     `;
     tbody.appendChild(tr);
   }
@@ -420,12 +433,8 @@ function renderManualTrackingRows() {
   tbody.querySelectorAll("[data-send-tracking]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.sendTracking;
-      const input = tbody.querySelector(`[data-tracking-input="${id}"]`);
-      const trackingCode = input.value.trim();
-      if (!trackingCode) {
-        alert("Informe o codigo de rastreio.");
-        return;
-      }
+      const trackingCode = trackingPreviews[id];
+      if (!trackingCode) return;
       btn.disabled = true;
       try {
         await api(`/${id}/tracking`, { method: "POST", body: JSON.stringify({ trackingCode }) });
