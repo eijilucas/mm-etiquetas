@@ -167,12 +167,16 @@
       <div class="card">
         <div class="toolbar">
           <input type="text" class="text-input" id="manualTrackingSearch" placeholder="Buscar por numero do pedido ou cliente" />
+          <button class="btn" id="selectAllManualTrackingBtn">Selecionar todos</button>
+          <button class="btn" id="bulkSendTrackingBtn" disabled>Enviar selecionados</button>
+          <button class="btn danger" id="bulkArchiveManualBtn" disabled>Remover selecionados</button>
           <button class="btn" id="refreshManualTrackingBtn">Atualizar</button>
         </div>
         <p class="hint-text">Pedidos com etiqueta ja comprada pelo sistema: o codigo aparece sozinho assim que a Melhor Envio libera, so clicar Enviar. Pedidos comprados por fora (falharam aqui e foram feitos na mao): cole o codigo manualmente.</p>
         <table>
           <thead>
             <tr>
+              <th></th>
               <th>Pedido</th>
               <th>Loja</th>
               <th>Cliente</th>

@@ -411,12 +411,26 @@ async function loadHeld() {
 // purchase, held is an explicit "wait for a human decision" state.
 let manualTrackingOrders = [];
 let trackingPreviews = {};
+const selectedManualTracking = new Set();
+
+function updateManualTrackingBulkButtons() {
+  document.getElementById("bulkSendTrackingBtn").disabled = selectedManualTracking.size === 0;
+  document.getElementById("bulkArchiveManualBtn").disabled = selectedManualTracking.size === 0;
+}
 
 async function loadManualTracking() {
   const { orders } = await api("/processing");
   manualTrackingOrders = orders.filter(
     (o) => o.status !== "tracking_synced" && (o.melhorEnvioOrderId || o.status === "failed"),
   );
+
+  // Same prune-not-clear reasoning as the other tabs: this reloads every
+  // 30s, and a hard .clear() would silently unselect whatever was checked
+  // mid-click.
+  const visibleIds = new Set(manualTrackingOrders.map((o) => o.id));
+  for (const id of [...selectedManualTracking]) {
+    if (!visibleIds.has(id)) selectedManualTracking.delete(id);
+  }
 
   trackingPreviews = {};
   const autoFetchable = manualTrackingOrders.filter((o) => o.melhorEnvioOrderId);
@@ -444,6 +458,7 @@ function renderManualTrackingRows() {
 
   tbody.innerHTML = "";
   empty.style.display = visible.length === 0 ? "block" : "none";
+  updateManualTrackingBulkButtons();
 
   for (const order of visible) {
     const tr = document.createElement("tr");
@@ -455,6 +470,7 @@ function renderManualTrackingRows() {
         : `<span class="text-label">Ainda sem codigo</span>`
       : `<input type="text" class="text-input" data-tracking-input="${order.id}" placeholder="Codigo de rastreio (comprado por fora)" />`;
     tr.innerHTML = `
+      <td><input type="checkbox" data-select-manual="${order.id}" ${selectedManualTracking.has(order.id) ? "checked" : ""} /></td>
       <td>${orderRefHtml(order)}</td>
       <td>${storeCell(order)}</td>
       <td>${order.customerName ?? "-"}</td>
@@ -467,6 +483,15 @@ function renderManualTrackingRows() {
     `;
     tbody.appendChild(tr);
   }
+
+  tbody.querySelectorAll("[data-select-manual]").forEach((checkbox) => {
+    checkbox.addEventListener("change", (event) => {
+      const id = event.target.dataset.selectManual;
+      if (event.target.checked) selectedManualTracking.add(id);
+      else selectedManualTracking.delete(id);
+      updateManualTrackingBulkButtons();
+    });
+  });
 
   // Covers orders that got resolved entirely by hand outside this system —
   // label bought AND tracking already sent to Shopify directly — so there's
@@ -513,6 +538,58 @@ function renderManualTrackingRows() {
 function setupManualTracking() {
   document.getElementById("manualTrackingSearch").addEventListener("input", renderManualTrackingRows);
   document.getElementById("refreshManualTrackingBtn").addEventListener("click", loadManualTracking);
+
+  document.getElementById("selectAllManualTrackingBtn").addEventListener("click", () => {
+    const checkboxes = document.querySelectorAll('#manualTrackingTableBody input[type="checkbox"]');
+    const allSelected = checkboxes.length > 0 && Array.from(checkboxes).every((c) => c.checked);
+    checkboxes.forEach((checkbox) => {
+      checkbox.checked = !allSelected;
+      const id = checkbox.dataset.selectManual;
+      if (!allSelected) selectedManualTracking.add(id);
+      else selectedManualTracking.delete(id);
+    });
+    updateManualTrackingBulkButtons();
+  });
+
+  document.getElementById("bulkSendTrackingBtn").addEventListener("click", async () => {
+    const tbody = document.getElementById("manualTrackingTableBody");
+    const ids = Array.from(selectedManualTracking);
+    const errors = [];
+    for (const id of ids) {
+      const input = tbody.querySelector(`[data-tracking-input="${id}"]`);
+      const trackingCode = input ? input.value.trim() : trackingPreviews[id];
+      if (!trackingCode) continue; // no code yet for this one — skip, not an error
+      try {
+        await api(`/${id}/tracking`, { method: "POST", body: JSON.stringify({ trackingCode }) });
+      } catch (error) {
+        errors.push(`${id}: ${error.message}`);
+      }
+    }
+    selectedManualTracking.clear();
+    await loadManualTracking();
+    await refreshKpis();
+    if (errors.length > 0) alert(`Alguns pedidos falharam ao enviar:\n${errors.join("\n")}`);
+  });
+
+  document.getElementById("bulkArchiveManualBtn").addEventListener("click", async () => {
+    const ids = Array.from(selectedManualTracking).filter(
+      (id) => manualTrackingOrders.find((o) => o.id === id)?.status === "failed",
+    );
+    if (ids.length === 0) return;
+    if (!confirm(`Remover ${ids.length} pedido(s) do painel? Use quando ja foram resolvidos inteiramente por fora.`)) return;
+    const errors = [];
+    for (const id of ids) {
+      try {
+        await api(`/${id}/archive`, { method: "POST" });
+      } catch (error) {
+        errors.push(`${id}: ${error.message}`);
+      }
+    }
+    selectedManualTracking.clear();
+    await loadManualTracking();
+    await refreshKpis();
+    if (errors.length > 0) alert(`Alguns pedidos falharam ao remover:\n${errors.join("\n")}`);
+  });
 }
 
 async function refreshKpis() {
