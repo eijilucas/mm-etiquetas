@@ -127,16 +127,23 @@ function renderPendingStoreFilter() {
 function renderPendingRows() {
   const tbody = document.getElementById("pendingTableBody");
   const empty = document.getElementById("pendingEmpty");
-  const visible = pendingStoreFilter === "all" ? pendingOrders : pendingOrders.filter((order) => order.storeKey === pendingStoreFilter);
+  const storeFiltered = pendingStoreFilter === "all" ? pendingOrders : pendingOrders.filter((order) => order.storeKey === pendingStoreFilter);
 
   // Prune selections for orders that dropped off the list (approved/held
   // elsewhere) instead of wiping the whole selection — this table reloads
   // every 30s and on every webhook-driven refresh, which used to silently
-  // unselect whatever the packer had checked mid-click.
-  const visibleIds = new Set(visible.map((order) => order.id));
+  // unselect whatever the packer had checked mid-click. Pruned against the
+  // store filter only, not the search box below — typing a search query
+  // must never silently unselect an order that's just temporarily hidden.
+  const storeFilteredIds = new Set(storeFiltered.map((order) => order.id));
   for (const id of [...selectedPending]) {
-    if (!visibleIds.has(id)) selectedPending.delete(id);
+    if (!storeFilteredIds.has(id)) selectedPending.delete(id);
   }
+
+  const query = document.getElementById("pendingSearch").value.trim().toLowerCase();
+  const visible = query
+    ? storeFiltered.filter((order) => `${order.shopifyOrderNumber ?? order.shopifyOrderId} ${order.customerName ?? ""}`.toLowerCase().includes(query))
+    : storeFiltered;
 
   tbody.innerHTML = "";
   updateBulkButtons();
@@ -752,6 +759,8 @@ function setupBulkPrint() {
 }
 
 function setupToolbar() {
+  document.getElementById("pendingSearch").addEventListener("input", renderPendingRows);
+
   document.getElementById("selectAllReleasedBtn").addEventListener("click", () => {
     const checkboxes = document.querySelectorAll('#releasedTableBody input[type="checkbox"]');
     const allSelected = checkboxes.length > 0 && Array.from(checkboxes).every((c) => c.checked);
