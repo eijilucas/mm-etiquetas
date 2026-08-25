@@ -97,7 +97,9 @@ export async function retryStalledTracking(
   return { retried: rows.length };
 }
 
-const NON_TERMINAL_STATUSES = ["approved", "cart_created", "purchased", "label_generated", "failed"];
+// tracking_ready is included so an order nobody clicked Enviar on eventually
+// alerts too, instead of silently sitting there forever unnoticed.
+const NON_TERMINAL_STATUSES = ["approved", "cart_created", "purchased", "label_generated", "tracking_ready", "failed"];
 
 // Alerts once per stuck order per scan; relies on updated_at age so a
 // reprocess (which touches updated_at) naturally resets the alert window.

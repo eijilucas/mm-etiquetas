@@ -13,6 +13,7 @@ const PROCESSING_STATUSES: ShippingStatus[] = [
   "cart_created",
   "purchased",
   "label_generated",
+  "tracking_ready",
   "tracking_synced",
   "failed",
 ];

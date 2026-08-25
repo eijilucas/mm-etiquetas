@@ -1,6 +1,6 @@
 import "./test_env.ts";
 import { assertEquals } from "jsr:@std/assert@1";
-import { runShippingPipeline, cancelOrderLabel } from "../supabase/functions/_shared/pipeline.ts";
+import { runShippingPipeline, cancelOrderLabel, manualTrackingSync } from "../supabase/functions/_shared/pipeline.ts";
 import { loadConfig } from "../supabase/functions/_shared/config.ts";
 import { makeFakeSupabase } from "./fake_supabase.ts";
 
@@ -111,7 +111,7 @@ function meAndShopifyHandler() {
   };
 }
 
-Deno.test("drives the order all the way to tracking_synced and creates the Shopify fulfillment", async () => {
+Deno.test("drives the order all the way to tracking_ready, but does NOT notify Shopify/the customer automatically", async () => {
   const fake = makeFakeSupabase();
   fake.table("orders_shipping").push(makeApprovedOrder());
   let cartRequestBody: { service?: number } | undefined;
@@ -121,6 +121,15 @@ Deno.test("drives the order all the way to tracking_synced and creates the Shopi
       if (url.includes("/me/cart")) {
         cartRequestBody = JSON.parse(init.body as string);
       }
+      // Sending tracking to Shopify is now a separate, deliberate action
+      // (manualTrackingSync) — if the automated pipeline ever called it on
+      // its own again, this mock would throw and fail the test.
+      if (url.includes("/graphql.json")) {
+        const body = init.body ? JSON.parse(init.body as string) : undefined;
+        if (typeof body?.query === "string" && (body.query.includes("GetFulfillmentOrders") || body.query.includes("FulfillmentCreateV2"))) {
+          throw new Error("syncTrackingStep must not create a Shopify fulfillment on its own anymore");
+        }
+      }
       return meAndShopifyHandler()(url, init);
     },
     // deno-lint-ignore no-explicit-any
@@ -128,15 +137,33 @@ Deno.test("drives the order all the way to tracking_synced and creates the Shopi
   );
 
   const order = fake.table("orders_shipping")[0];
-  assertEquals(order.status, "tracking_synced");
+  assertEquals(order.status, "tracking_ready");
   assertEquals(cartRequestBody?.service, 1); // cheapest valid quote (PAC, R$24.50) beats SEDEX and the errored Jadlog quote
   assertEquals(order.melhor_envio_cart_id, "me-cart-1");
   assertEquals(order.shipping_price, 24.5);
   assertEquals(order.melhor_envio_order_id, "me-order-1");
   assertEquals(order.label_pdf_url, "https://melhorenvio.com.br/labels/me-order-1.pdf");
   assertEquals(order.tracking_code, "ME23002OWZ7BR");
-  assertEquals(order.shopify_fulfillment_id, "gid://shopify/Fulfillment/1");
+  assertEquals(order.shopify_fulfillment_id, undefined);
   assertEquals(order.last_error, null);
+});
+
+Deno.test("manualTrackingSync completes the flow: sends the stored code to Shopify and reaches tracking_synced", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push(makeApprovedOrder());
+
+  await withFetchMock(meAndShopifyHandler(), () =>
+    // deno-lint-ignore no-explicit-any
+    runShippingPipeline(fake as any, config, "order-happy-1"));
+  assertEquals(fake.table("orders_shipping")[0].status, "tracking_ready");
+
+  await withFetchMock(meAndShopifyHandler(), () =>
+    // deno-lint-ignore no-explicit-any
+    manualTrackingSync(fake as any, config, "order-happy-1", "ME23002OWZ7BR"));
+
+  const order = fake.table("orders_shipping")[0];
+  assertEquals(order.status, "tracking_synced");
+  assertEquals(order.shopify_fulfillment_id, "gid://shopify/Fulfillment/1");
 });
 
 Deno.test("never re-issues a cart or a purchase when the pipeline is re-run after completion (idempotent)", async () => {
@@ -174,7 +201,7 @@ Deno.test("uses the single-item volume estimate (2x20x20cm, 0.5kg) for a 1-quant
   }, () => runShippingPipeline(fake as any, config, "order-happy-1"));
 
   const updated = fake.table("orders_shipping")[0];
-  assertEquals(updated.status, "tracking_synced");
+  assertEquals(updated.status, "tracking_ready");
   assertEquals(cartRequestBody.volumes, [{ height: 2, width: 20, length: 20, weight: 0.5 }]);
 });
 
@@ -195,7 +222,7 @@ Deno.test("uses the multi-item volume estimate (2x40x40cm, 1kg) once total quant
   }, () => runShippingPipeline(fake as any, config, "order-happy-1"));
 
   const updated = fake.table("orders_shipping")[0];
-  assertEquals(updated.status, "tracking_synced");
+  assertEquals(updated.status, "tracking_ready");
   assertEquals(cartRequestBody.volumes, [{ height: 2, width: 40, length: 40, weight: 1 }]);
 });
 
@@ -253,7 +280,7 @@ Deno.test("reports the label to mental-madness-estoque right after it's generate
     shopifyOrderId: 9001,
     items: [{ shopifyLineItemId: 1, quantity: 1 }],
   });
-  assertEquals(fake.table("orders_shipping")[0].status, "tracking_synced"); // 500 from estoque didn't stall the order
+  assertEquals(fake.table("orders_shipping")[0].status, "tracking_ready"); // 500 from estoque didn't stall the order
 });
 
 Deno.test("skips an order another run already claimed seconds ago, instead of doing any work concurrently", async () => {
@@ -287,7 +314,7 @@ Deno.test("claims a stale lock (older than 5 minutes) instead of treating it as 
     runShippingPipeline(fake as any, config, "order-happy-1"));
 
   const updated = fake.table("orders_shipping")[0];
-  assertEquals(updated.status, "tracking_synced");
+  assertEquals(updated.status, "tracking_ready");
   assertEquals(updated.processing_started_at, null); // released after the run
 });
 
@@ -519,8 +546,8 @@ Deno.test("resumes past a stalled 'purchased' status when the label was already 
     runShippingPipeline(fake as any, config, "order-happy-1"));
 
   const updated = fake.table("orders_shipping")[0];
-  assertEquals(updated.status, "tracking_synced");
-  assertEquals(updated.shopify_fulfillment_id, "gid://shopify/Fulfillment/1");
+  assertEquals(updated.status, "tracking_ready");
+  assertEquals(updated.tracking_code, "ME23002OWZ7BR");
 });
 
 Deno.test("does not fabricate a tracking code from the internal Melhor Envio order id when the carrier hasn't assigned one yet", async () => {
@@ -576,7 +603,7 @@ Deno.test("fetches the recipient CPF live via localizationExtensions when the st
   }, () => runShippingPipeline(fake as any, config, "order-happy-1"));
 
   const updated = fake.table("orders_shipping")[0];
-  assertEquals(updated.status, "tracking_synced");
+  assertEquals(updated.status, "tracking_ready");
   assertEquals(cartRequestBody.to.document, "15933562696");
 });
 

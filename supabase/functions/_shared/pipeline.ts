@@ -350,9 +350,13 @@ async function generateAndPrintLabelStep(supabase: SupabaseClient, config: AppCo
   return order;
 }
 
+// Only fetches and stores the code — does NOT notify Shopify/the customer.
+// That used to happen in the same step, automatically, every time the
+// 15min cron retried a stalled order; now it's a deliberate separate action
+// (see manualTrackingSync) so a human decides when the customer gets told.
 async function syncTrackingStep(supabase: SupabaseClient, config: AppConfig, order: OrderShippingRow): Promise<OrderShippingRow> {
-  if (order.tracking_code && order.shopify_fulfillment_id) {
-    return updateOrder(supabase, order.id, { status: "tracking_synced" });
+  if (order.tracking_code) {
+    return updateOrder(supabase, order.id, { status: "tracking_ready" });
   }
   if (!order.melhor_envio_order_id) {
     throw new Error("Cannot sync tracking: missing melhorEnvioOrderId");
@@ -361,35 +365,15 @@ async function syncTrackingStep(supabase: SupabaseClient, config: AppConfig, ord
   // typically only assigns one once the shipment is actually posted — so
   // this polls /me/shipment/tracking and throws (leaving the order retryable
   // via reprocess) instead of ever faking a code from the internal order id.
-  const trackingCode = order.tracking_code ?? (await fetchTrackingByOrderId(config, order.melhor_envio_order_id));
+  const trackingCode = await fetchTrackingByOrderId(config, order.melhor_envio_order_id);
   if (!trackingCode) {
     throw new Error(TRACKING_NOT_YET_AVAILABLE_ERROR);
   }
 
-  const store = getStoreByKey(config, order.store_key);
-  if (!store) {
-    throw new Error(`No Shopify store configured for storeKey "${order.store_key}"`);
-  }
-
-  const fulfillment = await createFulfillment(store, {
-    shopifyOrderGraphqlId: order.shopify_graphql_id ?? `gid://shopify/Order/${order.shopify_order_id}`,
-    trackingInfo: {
-      number: trackingCode,
-      // Melhor Envio isn't in Shopify's known-carrier list, so it always
-      // shows as "Outra" (Other) in the admin regardless of this string —
-      // what actually needs to be right is the tracking URL: the customer's
-      // link must go to a tracking lookup page, not the raw label PDF.
-      company: "Melhor Envio",
-      url: config.melhorEnvio.trackingUrl,
-    },
-    notifyCustomer: true,
-  });
-
-  log({ orderShippingId: order.id, fulfillmentId: fulfillment.fulfillmentId }, "pipeline_tracking_synced");
+  log({ orderShippingId: order.id, trackingCode }, "pipeline_tracking_code_ready");
   return updateOrder(supabase, order.id, {
     tracking_code: trackingCode,
-    shopify_fulfillment_id: fulfillment.fulfillmentId,
-    status: "tracking_synced",
+    status: "tracking_ready",
     last_error: null,
   });
 }
@@ -441,14 +425,17 @@ async function handlePipelineFailure(
   );
 }
 
-// For orders shipped entirely by hand outside this system (e.g. #3290,
-// where the CEP our pipeline rejected made Vitor just buy the label
-// directly on Melhor Envio's site) — there's no melhor_envio_order_id to
-// poll a tracking code from, so this hands a manually-typed code straight
-// to Shopify instead of requiring the order to have gone through any of the
-// earlier pipeline steps. Works from any non-terminal status for exactly
-// that reason: these orders may be stuck in pending_approval, held, or
-// failed depending on where they fell out of the normal flow.
+// The only path by which a tracking code ever reaches Shopify (and
+// notifies the customer) — deliberately not automatic. Covers two cases:
+// (1) the normal flow, where syncTrackingStep already fetched and stored
+// the code (status "tracking_ready") and a human clicks Enviar in the
+// Rastreio manual tab to release it; (2) orders shipped entirely by hand
+// outside this system (e.g. #3290, where the CEP our pipeline rejected
+// made Vitor just buy the label directly on Melhor Envio's site), which
+// have no melhor_envio_order_id to poll at all. Works from any
+// non-terminal status for exactly that reason — these orders can be
+// sitting in pending_approval, held, tracking_ready, or failed depending
+// on where they are in (or fell out of) the normal flow.
 export async function manualTrackingSync(
   supabase: SupabaseClient,
   config: AppConfig,

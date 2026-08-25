@@ -8,6 +8,7 @@ export type ShippingStatus =
   | "cart_created"
   | "purchased"
   | "label_generated"
+  | "tracking_ready"
   | "tracking_synced"
   | "held"
   | "failed"

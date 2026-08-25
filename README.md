@@ -24,8 +24,11 @@ no mesmo projeto Supabase.
 - **Postgres (Supabase)** — tabela `orders_shipping`, uma linha por pedido Shopify (chave unica
   composta `store_key` + `shopify_order_id`, ja que o mesmo numero de pedido pode existir em lojas
   diferentes), com o status do pipeline (`pending_approval -> approved -> cart_created -> purchased
-  -> label_generated -> tracking_synced`, alem de `held` e `failed`). RLS habilitado sem policies
-  publicas — apenas as Edge Functions acessam a tabela, sempre com a service-role key.
+  -> label_generated -> tracking_ready -> tracking_synced`, alem de `held`, `failed` e `archived`).
+  `tracking_ready` significa que o codigo de rastreio ja foi buscado e guardado, mas ainda **nao**
+  foi enviado pro Shopify/cliente — isso so acontece quando um humano clica "Enviar" na aba
+  Rastreio manual do painel (`manualTrackingSync`), nunca automaticamente. RLS habilitado sem
+  policies publicas — apenas as Edge Functions acessam a tabela, sempre com a service-role key.
 - **Edge Functions** (Deno, `supabase/functions/`):
   - `shopify-webhook` — recebe `orders/paid` e `orders/updated` de qualquer loja em
     `/functions/v1/shopify-webhook/<storeKey>`, valida o HMAC e faz upsert como `pending_approval`

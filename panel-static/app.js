@@ -4,6 +4,7 @@ const STATUS_LABELS = {
   cart_created: "Carrinho criado",
   purchased: "Frete comprado",
   label_generated: "Etiqueta gerada",
+  tracking_ready: "Aguardando envio",
   tracking_synced: "Concluido",
   held: "Em espera",
   failed: "Falhou",
@@ -185,7 +186,7 @@ function updateBulkButtons() {
 
 // Printable = has a label already, so there's something to print at all.
 function isPrintable(order) {
-  return order.status === "label_generated" || order.status === "tracking_synced";
+  return order.status === "label_generated" || order.status === "tracking_ready" || order.status === "tracking_synced";
 }
 
 // Calling window.open() in a loop is unreliable across browsers — some
@@ -400,10 +401,14 @@ async function loadHeld() {
   return orders;
 }
 
-// Candidates for the Rastreio manual tab, two different flavors:
-//  - melhorEnvioOrderId set: our own pipeline already purchased the label,
-//    just stuck before syncing tracking (e.g. retrying every 15min waiting
-//    on Melhor Envio) — code gets auto-fetched, no typing needed.
+// Candidates for the Rastreio manual tab, three flavors:
+//  - status "tracking_ready": syncTrackingStep already fetched and stored
+//    the code (this is now the normal path for every order — sending it to
+//    Shopify/the customer is a deliberate separate click, never automatic).
+//  - status "failed" with melhorEnvioOrderId: purchased, but still waiting
+//    on Melhor Envio to assign a code (e.g. carrier hasn't scanned it in
+//    yet) — auto-fetched live so Vitor can check right now instead of
+//    waiting for the next 15min cron cycle.
 //  - status "failed" with no melhorEnvioOrderId: never purchased through
 //    this system at all, e.g. bought by hand on Melhor Envio's site after a
 //    balance/CEP failure here — nothing to auto-fetch, needs a typed code.
@@ -420,9 +425,7 @@ function updateManualTrackingBulkButtons() {
 
 async function loadManualTracking() {
   const { orders } = await api("/processing");
-  manualTrackingOrders = orders.filter(
-    (o) => o.status !== "tracking_synced" && (o.melhorEnvioOrderId || o.status === "failed"),
-  );
+  manualTrackingOrders = orders.filter((o) => o.status === "tracking_ready" || o.status === "failed");
 
   // Same prune-not-clear reasoning as the other tabs: this reloads every
   // 30s, and a hard .clear() would silently unselect whatever was checked
@@ -432,8 +435,10 @@ async function loadManualTracking() {
     if (!visibleIds.has(id)) selectedManualTracking.delete(id);
   }
 
+  // tracking_ready orders already carry their code (order.trackingCode) —
+  // only the still-stuck "failed" ones need a live lookup.
   trackingPreviews = {};
-  const autoFetchable = manualTrackingOrders.filter((o) => o.melhorEnvioOrderId);
+  const autoFetchable = manualTrackingOrders.filter((o) => o.status === "failed" && o.melhorEnvioOrderId);
   if (autoFetchable.length > 0) {
     const { previews } = await api("/tracking-preview", {
       method: "POST",
@@ -444,6 +449,15 @@ async function loadManualTracking() {
 
   renderManualTrackingRows();
   return manualTrackingOrders;
+}
+
+// Single source of truth for "what code would Enviar send right now" —
+// used by both the per-row button and the bulk action.
+function resolveManualTrackingCode(order) {
+  if (order.status === "tracking_ready") return order.trackingCode;
+  if (order.melhorEnvioOrderId) return trackingPreviews[order.id] ?? null;
+  const input = document.querySelector(`[data-tracking-input="${order.id}"]`);
+  return input ? input.value.trim() : null;
 }
 
 function renderManualTrackingRows() {
@@ -462,13 +476,16 @@ function renderManualTrackingRows() {
 
   for (const order of visible) {
     const tr = document.createElement("tr");
-    const auto = !!order.melhorEnvioOrderId;
+    const ready = order.status === "tracking_ready";
+    const auto = !ready && !!order.melhorEnvioOrderId;
     const preview = trackingPreviews[order.id];
-    const codeCell = auto
-      ? preview
-        ? `<span class="mono-text">${preview}</span>`
-        : `<span class="text-label">Ainda sem codigo</span>`
-      : `<input type="text" class="text-input" data-tracking-input="${order.id}" placeholder="Codigo de rastreio (comprado por fora)" />`;
+    const codeCell = ready
+      ? `<span class="mono-text">${order.trackingCode}</span>`
+      : auto
+        ? preview
+          ? `<span class="mono-text">${preview}</span>`
+          : `<span class="text-label">Ainda sem codigo</span>`
+        : `<input type="text" class="text-input" data-tracking-input="${order.id}" placeholder="Codigo de rastreio (comprado por fora)" />`;
     tr.innerHTML = `
       <td><input type="checkbox" data-select-manual="${order.id}" ${selectedManualTracking.has(order.id) ? "checked" : ""} /></td>
       <td>${orderRefHtml(order)}</td>
@@ -516,10 +533,10 @@ function renderManualTrackingRows() {
   tbody.querySelectorAll("[data-send-tracking]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.sendTracking;
-      const input = tbody.querySelector(`[data-tracking-input="${id}"]`);
-      const trackingCode = input ? input.value.trim() : trackingPreviews[id];
+      const order = manualTrackingOrders.find((o) => o.id === id);
+      const trackingCode = resolveManualTrackingCode(order);
       if (!trackingCode) {
-        if (input) alert("Informe o codigo de rastreio.");
+        if (!order.melhorEnvioOrderId) alert("Informe o codigo de rastreio.");
         return;
       }
       btn.disabled = true;
@@ -552,12 +569,11 @@ function setupManualTracking() {
   });
 
   document.getElementById("bulkSendTrackingBtn").addEventListener("click", async () => {
-    const tbody = document.getElementById("manualTrackingTableBody");
     const ids = Array.from(selectedManualTracking);
     const errors = [];
     for (const id of ids) {
-      const input = tbody.querySelector(`[data-tracking-input="${id}"]`);
-      const trackingCode = input ? input.value.trim() : trackingPreviews[id];
+      const order = manualTrackingOrders.find((o) => o.id === id);
+      const trackingCode = order ? resolveManualTrackingCode(order) : null;
       if (!trackingCode) continue; // no code yet for this one — skip, not an error
       try {
         await api(`/${id}/tracking`, { method: "POST", body: JSON.stringify({ trackingCode }) });
