@@ -662,16 +662,18 @@ function setupManualTracking() {
   });
 }
 
+function renderKpis(pendingList, processingList) {
+  document.getElementById("kpiPending").textContent = pendingList.length;
+  document.getElementById("kpiProcessing").textContent = processingList.filter((o) => o.status !== "tracking_synced" && o.status !== "failed").length;
+  document.getElementById("kpiCompleted").textContent = processingList.filter((o) => o.status === "tracking_synced").length;
+  document.getElementById("kpiFailed").textContent = processingList.filter((o) => o.status === "failed").length;
+}
+
+// Used after actions that only touch one tab (approve, hold, archive, ...) —
+// loadAll has its own cheaper path that reuses data it already fetched.
 async function refreshKpis() {
-  const [pending, processing, held] = await Promise.all([
-    api("/pending"),
-    api("/processing"),
-    api("/held"),
-  ]);
-  document.getElementById("kpiPending").textContent = pending.orders.length;
-  document.getElementById("kpiProcessing").textContent = processing.orders.filter((o) => o.status !== "tracking_synced" && o.status !== "failed").length;
-  document.getElementById("kpiCompleted").textContent = processing.orders.filter((o) => o.status === "tracking_synced").length;
-  document.getElementById("kpiFailed").textContent = processing.orders.filter((o) => o.status === "failed").length;
+  const [pending, processing] = await Promise.all([api("/pending"), api("/processing")]);
+  renderKpis(pending.orders, processing.orders);
 }
 
 function setupTabs() {
@@ -681,6 +683,10 @@ function setupTabs() {
       document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
       btn.classList.add("active");
       document.getElementById(`tab-${btn.dataset.tab}`).classList.add("active");
+      // Held/Rastreio are only kept fresh by the background poll while
+      // their tab is active (see loadAll), so fetch once on first switch.
+      if (btn.dataset.tab === "held") loadHeld();
+      if (btn.dataset.tab === "manual-tracking") loadManualTracking();
     });
   });
 }
@@ -897,9 +903,18 @@ function setupStockConfirmDialog() {
   });
 }
 
+// Pending/processing feed the always-visible KPI row, so they're fetched
+// every tick regardless of which tab is open. Held and Rastreio aren't part
+// of the KPIs, so they're only fetched when their own tab is the one showing
+// — no point re-downloading a table nobody is looking at every 30s.
 async function loadAll() {
   try {
-    await Promise.all([loadPending(), loadProcessing(), loadHeld(), loadManualTracking(), refreshKpis()]);
+    const activeTab = document.querySelector(".tab-btn.active")?.dataset.tab;
+    const tasks = [loadPending(), loadProcessing()];
+    if (activeTab === "held") tasks.push(loadHeld());
+    if (activeTab === "manual-tracking") tasks.push(loadManualTracking());
+    const [pendingList, processingList] = await Promise.all(tasks);
+    renderKpis(pendingList, processingList);
   } catch (error) {
     console.error(error);
   }
@@ -915,4 +930,4 @@ setupStockConfirmDialog();
 setupToolbar();
 setInterval(() => {
   if (document.getElementById("mainContent").style.display !== "none") loadAll();
-}, 30000);
+}, 60000);
