@@ -72,6 +72,7 @@
           <button class="btn" id="refreshPendingBtn">Atualizar</button>
           <input type="text" class="text-input" id="pendingSearch" placeholder="Buscar por numero do pedido ou cliente" style="margin-left: auto;" />
         </div>
+        <div class="table-scroll">
         <table>
           <thead>
             <tr>
@@ -86,6 +87,7 @@
           </thead>
           <tbody id="pendingTableBody"></tbody>
         </table>
+        </div>
         <div class="empty-state" id="pendingEmpty" style="display:none;">Nenhum pedido pendente de aprovacao.</div>
       </div>
     </section>
@@ -97,6 +99,7 @@
           <button class="btn" id="bulkPrintBtn" disabled>Imprimir selecionadas</button>
           <button class="btn" id="refreshReleasedBtn">Atualizar</button>
         </div>
+        <div class="table-scroll">
         <table>
           <thead>
             <tr>
@@ -115,6 +118,7 @@
           </thead>
           <tbody id="releasedTableBody"></tbody>
         </table>
+        </div>
         <div class="empty-state" id="releasedEmpty" style="display:none;">Nenhum pedido liberado.</div>
       </div>
     </section>
@@ -124,6 +128,7 @@
         <div class="toolbar">
           <button class="btn" id="refreshPostedBtn">Atualizar</button>
         </div>
+        <div class="table-scroll">
         <table>
           <thead>
             <tr>
@@ -138,6 +143,7 @@
           </thead>
           <tbody id="postedTableBody"></tbody>
         </table>
+        </div>
         <div class="empty-state" id="postedEmpty" style="display:none;">Nenhum pedido postado ainda.</div>
       </div>
     </section>
@@ -147,6 +153,7 @@
         <div class="toolbar">
           <button class="btn" id="refreshHeldBtn">Atualizar</button>
         </div>
+        <div class="table-scroll">
         <table>
           <thead>
             <tr>
@@ -160,6 +167,7 @@
           </thead>
           <tbody id="heldTableBody"></tbody>
         </table>
+        </div>
         <div class="empty-state" id="heldEmpty" style="display:none;">Nenhum pedido em espera.</div>
       </div>
     </section>
@@ -174,6 +182,7 @@
           <button class="btn" id="refreshManualTrackingBtn">Atualizar</button>
         </div>
         <p class="hint-text">O envio pro cliente agora e sempre manual: quando o codigo fica pronto ele so fica guardado aqui, esperando voce clicar Enviar. Pedidos comprados por fora (falharam aqui e foram feitos na mao): cole o codigo manualmente.</p>
+        <div class="table-scroll">
         <table>
           <thead>
             <tr>
@@ -188,6 +197,7 @@
           </thead>
           <tbody id="manualTrackingTableBody"></tbody>
         </table>
+        </div>
         <div class="empty-state" id="manualTrackingEmpty" style="display:none;">Nenhum pedido encontrado.</div>
       </div>
     </section>
