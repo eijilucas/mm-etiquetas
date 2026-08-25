@@ -638,7 +638,7 @@ async function refreshBalance() {
       banner.style.display = "none";
       return;
     }
-    banner.textContent = `⚠️ Saldo baixo na Melhor Envio: ${formatCurrency(balance, "BRL")}. Adicione crédito para não travar a emissão de etiquetas.`;
+    banner.textContent = "⚠️ Saldo baixo na Melhor Envio. Adicione crédito para não travar a emissão de etiquetas.";
     banner.style.display = "block";
   } catch (error) {
     console.error(error);
