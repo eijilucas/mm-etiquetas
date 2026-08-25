@@ -68,7 +68,7 @@ function meAndShopifyHandler() {
       ]);
     }
     if (url.includes("/me/cart")) {
-      return jsonResponse({ id: "me-cart-1", protocol: "CART-PROTO" });
+      return jsonResponse({ id: "me-cart-1", protocol: "CART-PROTO", price: "24.50" });
     }
     if (url.includes("/me/shipment/checkout")) {
       return jsonResponse({ purchase: { id: "purchase-1", protocol: "PURCHASE-PROTO", orders: [{ id: "me-order-1", status: "posted" }] } });
@@ -131,6 +131,7 @@ Deno.test("drives the order all the way to tracking_synced and creates the Shopi
   assertEquals(order.status, "tracking_synced");
   assertEquals(cartRequestBody?.service, 1); // cheapest valid quote (PAC, R$24.50) beats SEDEX and the errored Jadlog quote
   assertEquals(order.melhor_envio_cart_id, "me-cart-1");
+  assertEquals(order.shipping_price, 24.5);
   assertEquals(order.melhor_envio_order_id, "me-order-1");
   assertEquals(order.label_pdf_url, "https://melhorenvio.com.br/labels/me-order-1.pdf");
   assertEquals(order.tracking_code, "ME23002OWZ7BR");

@@ -270,6 +270,27 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
       return json({ ok: true });
     }
 
+    // Permanently dismisses a held order from every panel tab without
+    // deleting the row (who held it, why, when stays in the DB) — for
+    // orders handled entirely outside this system that don't belong in any
+    // queue anymore (e.g. #3290, a label bought by hand on Melhor Envio's
+    // own site). Only from "held" since that's the one place with no
+    // automated next step waiting on the order.
+    if (req.method === "POST" && segments[1] === "archive") {
+      const id = segments[0];
+      const { data: order, error: findError } = await supabase.from("orders_shipping").select("*").eq("id", id).single();
+      if (findError || !order) return json({ error: "not_found" }, 404);
+      if (order.status !== "held") {
+        return json({ error: `cannot archive order in status ${order.status}` }, 400);
+      }
+      const { error } = await supabase
+        .from("orders_shipping")
+        .update({ status: "archived", archived_at: new Date().toISOString(), archived_by: user.email })
+        .eq("id", id);
+      if (error) throw error;
+      return json({ ok: true });
+    }
+
     // For a shipment purchased entirely outside this system (e.g. the CEP
     // our pipeline rejected, so it got bought by hand on Melhor Envio's
     // site) — hands a manually-typed tracking code straight to Shopify.

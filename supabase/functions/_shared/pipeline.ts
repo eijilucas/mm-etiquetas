@@ -288,9 +288,13 @@ async function createCartStep(supabase: SupabaseClient, config: AppConfig, order
   }
   const payload = await buildCartPayload(config, order);
   const cartItem = await addToCart(config, payload);
-  log({ orderShippingId: order.id, cartId: cartItem.id }, "pipeline_cart_created");
+  const shippingPrice = Number(cartItem.price);
+  log({ orderShippingId: order.id, cartId: cartItem.id, price: cartItem.price }, "pipeline_cart_created");
   return updateOrder(supabase, order.id, {
     melhor_envio_cart_id: cartItem.id,
+    // POST /me/cart already quotes the price for the chosen service — no
+    // extra call needed, just persisting what was previously only logged.
+    shipping_price: Number.isFinite(shippingPrice) ? shippingPrice : null,
     status: "cart_created",
     last_error: null,
   });

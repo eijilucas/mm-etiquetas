@@ -10,7 +10,8 @@ export type ShippingStatus =
   | "label_generated"
   | "tracking_synced"
   | "held"
-  | "failed";
+  | "failed"
+  | "archived";
 
 export interface OrderShippingRow {
   id: string;
@@ -38,6 +39,7 @@ export interface OrderShippingRow {
   melhor_envio_order_id: string | null;
   melhor_envio_label_id: string | null;
   melhor_envio_protocol: string | null;
+  shipping_price: number | null;
   tracking_code: string | null;
   tracking_company: string | null;
   label_pdf_url: string | null;
@@ -86,6 +88,7 @@ export interface OrderShippingApiShape {
   melhorEnvioOrderId: string | null;
   melhorEnvioLabelId: string | null;
   melhorEnvioProtocol: string | null;
+  shippingPrice: number | null;
   trackingCode: string | null;
   trackingCompany: string | null;
   labelPdfUrl: string | null;
@@ -124,6 +127,7 @@ export function toApiShape(row: OrderShippingRow): OrderShippingApiShape {
     melhorEnvioOrderId: row.melhor_envio_order_id,
     melhorEnvioLabelId: row.melhor_envio_label_id,
     melhorEnvioProtocol: row.melhor_envio_protocol,
+    shippingPrice: row.shipping_price,
     trackingCode: row.tracking_code,
     trackingCompany: row.tracking_company,
     labelPdfUrl: row.label_pdf_url,

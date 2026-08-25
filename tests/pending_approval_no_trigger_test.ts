@@ -366,3 +366,48 @@ Deno.test("tracking-preview batches one Melhor Envio call and applies the melhor
   assertEquals(trackingCallCount, 1);
   assertEquals(json.previews, { "order-a": "AA123456785BR", "order-b": "ME262CMAHI0BR" });
 });
+
+Deno.test("archives a held order so it drops out of every panel tab", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push({
+    id: "order-held",
+    store_key: "test",
+    shopify_order_id: "7001",
+    status: "held",
+    held_reason: "CEP invalido, comprado na mao pela Melhor Envio",
+  });
+
+  const req = new Request("http://localhost/functions/v1/orders-api/order-held/archive", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+  });
+
+  // deno-lint-ignore no-explicit-any
+  const res = await handleOrdersApi(req, { config, supabase: fake as any });
+
+  assertEquals(res.status, 200);
+  const order = fake.table("orders_shipping")[0];
+  assertEquals(order.status, "archived");
+  assertEquals(order.archived_by, "tester@example.com");
+});
+
+Deno.test("refuses to archive an order that isn't held", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push({
+    id: "order-pending",
+    store_key: "test",
+    shopify_order_id: "7002",
+    status: "pending_approval",
+  });
+
+  const req = new Request("http://localhost/functions/v1/orders-api/order-pending/archive", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+  });
+
+  // deno-lint-ignore no-explicit-any
+  const res = await handleOrdersApi(req, { config, supabase: fake as any });
+
+  assertEquals(res.status, 400);
+  assertEquals(fake.table("orders_shipping")[0].status, "pending_approval");
+});

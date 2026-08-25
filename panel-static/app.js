@@ -258,6 +258,7 @@ function renderReleasedRows(orders) {
       <td>${storeCell(order)}</td>
       <td>${order.customerName ?? "-"}</td>
       <td>${pill(order.status)}</td>
+      <td>${order.shippingPrice != null ? formatCurrency(order.shippingPrice, order.currency) : "-"}</td>
       <td>${order.trackingCode ?? "-"}</td>
       <td>${order.labelPdfUrl ? `<a class="btn" href="${order.labelPdfUrl}" target="_blank" rel="noopener">Etiqueta</a>` : "-"}</td>
       <td class="error-text">${order.lastError ?? ""}</td>
@@ -356,7 +357,10 @@ async function loadHeld() {
       <td>${order.customerName ?? "-"}</td>
       <td>${order.heldReason ?? "-"}</td>
       <td>${formatDate(order.heldAt)}</td>
-      <td><button class="btn" data-revert="${order.id}">Reverter para pendente</button></td>
+      <td>
+        <button class="btn" data-revert="${order.id}">Reverter para pendente</button>
+        <button class="btn danger" data-archive="${order.id}">Remover</button>
+      </td>
     `;
     tbody.appendChild(tr);
   }
@@ -375,26 +379,51 @@ async function loadHeld() {
     });
   });
 
+  // Doesn't delete the row (history stays in the DB), just moves it to a
+  // status no tab queries for — see the /archive route.
+  tbody.querySelectorAll("[data-archive]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.archive;
+      if (!confirm("Remover esse pedido do painel? Ele para de aparecer em qualquer aba (o historico continua salvo no banco).")) return;
+      btn.disabled = true;
+      try {
+        await api(`/${id}/archive`, { method: "POST" });
+        await loadHeld();
+        await refreshKpis();
+      } catch (error) {
+        alert(`Erro ao remover: ${error.message}`);
+        btn.disabled = false;
+      }
+    });
+  });
+
   return orders;
 }
 
-// Candidates for the Rastreio manual tab: orders our own pipeline already
-// purchased a label for (melhorEnvioOrderId set) but that haven't synced a
-// tracking code to Shopify yet — e.g. stuck failing every 15min waiting for
-// Melhor Envio to assign one. Pending/held orders never had a label bought
-// at all, so there's nothing to fetch for them; they're excluded on purpose.
+// Candidates for the Rastreio manual tab, two different flavors:
+//  - melhorEnvioOrderId set: our own pipeline already purchased the label,
+//    just stuck before syncing tracking (e.g. retrying every 15min waiting
+//    on Melhor Envio) — code gets auto-fetched, no typing needed.
+//  - status "failed" with no melhorEnvioOrderId: never purchased through
+//    this system at all, e.g. bought by hand on Melhor Envio's site after a
+//    balance/CEP failure here — nothing to auto-fetch, needs a typed code.
+// Pending/held orders are excluded either way: pending never attempted a
+// purchase, held is an explicit "wait for a human decision" state.
 let manualTrackingOrders = [];
 let trackingPreviews = {};
 
 async function loadManualTracking() {
   const { orders } = await api("/processing");
-  manualTrackingOrders = orders.filter((o) => o.status !== "tracking_synced" && o.melhorEnvioOrderId);
+  manualTrackingOrders = orders.filter(
+    (o) => o.status !== "tracking_synced" && (o.melhorEnvioOrderId || o.status === "failed"),
+  );
 
   trackingPreviews = {};
-  if (manualTrackingOrders.length > 0) {
+  const autoFetchable = manualTrackingOrders.filter((o) => o.melhorEnvioOrderId);
+  if (autoFetchable.length > 0) {
     const { previews } = await api("/tracking-preview", {
       method: "POST",
-      body: JSON.stringify({ ids: manualTrackingOrders.map((o) => o.id) }),
+      body: JSON.stringify({ ids: autoFetchable.map((o) => o.id) }),
     });
     trackingPreviews = previews;
   }
@@ -418,14 +447,20 @@ function renderManualTrackingRows() {
 
   for (const order of visible) {
     const tr = document.createElement("tr");
+    const auto = !!order.melhorEnvioOrderId;
     const preview = trackingPreviews[order.id];
+    const codeCell = auto
+      ? preview
+        ? `<span class="mono-text">${preview}</span>`
+        : `<span class="text-label">Ainda sem codigo</span>`
+      : `<input type="text" class="text-input" data-tracking-input="${order.id}" placeholder="Codigo de rastreio (comprado por fora)" />`;
     tr.innerHTML = `
       <td>${orderRefHtml(order)}</td>
       <td>${storeCell(order)}</td>
       <td>${order.customerName ?? "-"}</td>
       <td>${pill(order.status)}</td>
-      <td>${preview ? `<span class="mono-text">${preview}</span>` : `<span class="text-label">Ainda sem codigo</span>`}</td>
-      <td><button class="btn" data-send-tracking="${order.id}" ${preview ? "" : "disabled"}>Enviar</button></td>
+      <td>${codeCell}</td>
+      <td><button class="btn" data-send-tracking="${order.id}" ${auto && !preview ? "disabled" : ""}>Enviar</button></td>
     `;
     tbody.appendChild(tr);
   }
@@ -433,8 +468,12 @@ function renderManualTrackingRows() {
   tbody.querySelectorAll("[data-send-tracking]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.sendTracking;
-      const trackingCode = trackingPreviews[id];
-      if (!trackingCode) return;
+      const input = tbody.querySelector(`[data-tracking-input="${id}"]`);
+      const trackingCode = input ? input.value.trim() : trackingPreviews[id];
+      if (!trackingCode) {
+        if (input) alert("Informe o codigo de rastreio.");
+        return;
+      }
       btn.disabled = true;
       try {
         await api(`/${id}/tracking`, { method: "POST", body: JSON.stringify({ trackingCode }) });
