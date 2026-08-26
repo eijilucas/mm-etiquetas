@@ -137,6 +137,16 @@ function pill(status) {
   return `<span class="pill status-${status}">${STATUS_LABELS[status] || status}</span>`;
 }
 
+// Standard search box for every tab: filters by order number/id or customer
+// name. Add a new tab by giving it a <input id="XSearch"> in the toolbar
+// (last child, style="margin-left: auto;") and wiring "input" -> its render
+// function in setupToolbar, same as the others below.
+function filterBySearch(orders, inputId) {
+  const query = document.getElementById(inputId).value.trim().toLowerCase();
+  if (!query) return orders;
+  return orders.filter((order) => `${order.shopifyOrderNumber ?? order.shopifyOrderId} ${order.customerName ?? ""}`.toLowerCase().includes(query));
+}
+
 const selectedPending = new Set();
 let pendingOrders = [];
 let pendingStoreFilter = "all";
@@ -187,10 +197,7 @@ function renderPendingRows() {
     if (!storeFilteredIds.has(id)) selectedPending.delete(id);
   }
 
-  const query = document.getElementById("pendingSearch").value.trim().toLowerCase();
-  const visible = query
-    ? storeFiltered.filter((order) => `${order.shopifyOrderNumber ?? order.shopifyOrderId} ${order.customerName ?? ""}`.toLowerCase().includes(query))
-    : storeFiltered;
+  const visible = filterBySearch(storeFiltered, "pendingSearch");
 
   tbody.innerHTML = "";
   updateBulkButtons();
@@ -298,9 +305,13 @@ function updateReleasedBulkButtons() {
 // dropped off. "Postados" = same processing statuses, but posted_at is set —
 // see loadProcessing below, which fetches the whole /processing set once and
 // splits it by that flag rather than hitting the API twice.
-function renderReleasedRows(orders) {
+function renderReleasedRows() {
   const tbody = document.getElementById("releasedTableBody");
   const empty = document.getElementById("releasedEmpty");
+  const orders = filterBySearch(
+    processingOrders.filter((order) => !order.postedAt),
+    "releasedSearch",
+  );
   tbody.innerHTML = "";
   empty.style.display = orders.length === 0 ? "block" : "none";
 
@@ -358,9 +369,13 @@ function renderReleasedRows(orders) {
   });
 }
 
-function renderPostedRows(orders) {
+function renderPostedRows() {
   const tbody = document.getElementById("postedTableBody");
   const empty = document.getElementById("postedEmpty");
+  const orders = filterBySearch(
+    processingOrders.filter((order) => order.postedAt),
+    "postedSearch",
+  );
   tbody.innerHTML = "";
   empty.style.display = orders.length === 0 ? "block" : "none";
 
@@ -391,16 +406,25 @@ async function loadProcessing() {
   }
   updateReleasedBulkButtons();
 
-  renderReleasedRows(orders.filter((order) => !order.postedAt));
-  renderPostedRows(orders.filter((order) => order.postedAt));
+  renderReleasedRows();
+  renderPostedRows();
 
   return orders;
 }
 
+let heldOrders = [];
+
 async function loadHeld() {
   const { orders } = await api("/held");
+  heldOrders = orders;
+  renderHeldRows();
+  return orders;
+}
+
+function renderHeldRows() {
   const tbody = document.getElementById("heldTableBody");
   const empty = document.getElementById("heldEmpty");
+  const orders = filterBySearch(heldOrders, "heldSearch");
   tbody.innerHTML = "";
   empty.style.display = orders.length === 0 ? "block" : "none";
 
@@ -451,8 +475,6 @@ async function loadHeld() {
       }
     });
   });
-
-  return orders;
 }
 
 // Candidates for the Rastreio manual tab, three flavors:
@@ -520,12 +542,7 @@ function resolveManualTrackingCode(order) {
 function renderManualTrackingRows() {
   const tbody = document.getElementById("manualTrackingTableBody");
   const empty = document.getElementById("manualTrackingEmpty");
-  const query = document.getElementById("manualTrackingSearch").value.trim().toLowerCase();
-  const visible = manualTrackingOrders.filter((order) => {
-    if (!query) return true;
-    const haystack = `${order.shopifyOrderNumber ?? order.shopifyOrderId} ${order.customerName ?? ""}`.toLowerCase();
-    return haystack.includes(query);
-  });
+  const visible = filterBySearch(manualTrackingOrders, "manualTrackingSearch");
 
   tbody.innerHTML = "";
   empty.style.display = visible.length === 0 ? "block" : "none";
@@ -799,6 +816,9 @@ function setupBulkPrint() {
 
 function setupToolbar() {
   document.getElementById("pendingSearch").addEventListener("input", renderPendingRows);
+  document.getElementById("releasedSearch").addEventListener("input", renderReleasedRows);
+  document.getElementById("postedSearch").addEventListener("input", renderPostedRows);
+  document.getElementById("heldSearch").addEventListener("input", renderHeldRows);
 
   document.getElementById("selectAllReleasedBtn").addEventListener("click", () => {
     const checkboxes = document.querySelectorAll('#releasedTableBody input[type="checkbox"]');
