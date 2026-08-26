@@ -755,6 +755,27 @@ function setupLogin() {
   });
 }
 
+// Runs the same catch-up reconciliation-cron does on its own schedule, on
+// demand -- lets someone check for a fresh tracking code right now instead
+// of waiting for the next scheduled tick.
+function setupSyncNow() {
+  const btn = document.getElementById("syncNowBtn");
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    const originalText = btn.textContent;
+    btn.textContent = "Sincronizando...";
+    try {
+      await api("/reconciliation/run", { method: "POST" });
+      await loadAll();
+    } catch (error) {
+      await showAlert(`Erro ao sincronizar: ${error.message}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  });
+}
+
 function setupHoldDialog() {
   const dialog = document.getElementById("holdDialog");
   const reasonInput = document.getElementById("holdReasonInput");
@@ -949,6 +970,7 @@ async function loadAll() {
 
 setupTabs();
 setupLogin();
+setupSyncNow();
 setupHoldDialog();
 setupBulkPrint();
 setupManualTracking();

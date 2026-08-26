@@ -4,7 +4,7 @@ import { getAuthenticatedUser } from "../_shared/auth.ts";
 import { createServiceClient, toApiShape } from "../_shared/db.ts";
 import type { OrderShippingRow, ShippingStatus } from "../_shared/db.ts";
 import { runShippingPipeline, cancelOrderLabel, manualTrackingSync, checkApprovalIssues } from "../_shared/pipeline.ts";
-import { runReconciliation } from "../_shared/reconciliation.ts";
+import { runReconciliation, checkStuckOrders, syncPostedOrders, retryStalledTracking } from "../_shared/reconciliation.ts";
 import { fetchAccountBalance, fetchDeclarationPdfUrl, fetchTrackingBatch } from "../_shared/melhorenvio.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
@@ -263,8 +263,14 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
       return json({ ok: true });
     }
 
+    // Same four steps reconciliation-cron runs on its own schedule, exposed
+    // here so a person can trigger a full catch-up on demand (e.g. to check
+    // for a tracking code right now instead of waiting for the next tick).
     if (req.method === "POST" && isReconciliationRun) {
       const result = await runReconciliation(supabase, config);
+      await checkStuckOrders(supabase, config);
+      await syncPostedOrders(supabase, config);
+      await retryStalledTracking(supabase, config);
       return json(result);
     }
 
