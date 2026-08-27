@@ -117,6 +117,30 @@ Deno.test("does not enqueue a shipping job when the orders/paid webhook arrives"
   });
 });
 
+// This endpoint also receives orders/updated (address edits, discounts,
+// etc.), which fires regardless of payment status -- a not-yet-paid order
+// must never land in pending_approval just because it changed.
+Deno.test("does not persist an order whose financial_status isn't paid (orders/updated on an unpaid order)", async () => {
+  const fake = makeFakeSupabase();
+  const payload = JSON.stringify({ ...shopifyOrderPayload(), financial_status: "pending" });
+  const hmac = await sign(payload, secret);
+
+  await withShopifyGraphqlMock(async () => {
+    const req = new Request("http://localhost/functions/v1/shopify-webhook/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Shopify-Hmac-Sha256": hmac },
+      body: payload,
+    });
+
+    // deno-lint-ignore no-explicit-any
+    const res = await handleShopifyWebhook(req, { config, supabase: fake as any });
+
+    assertEquals(res.status, 200);
+    assertEquals(await res.json(), { ok: true, skipped: "not_paid" });
+    assertEquals(fake.table("orders_shipping").length, 0);
+  });
+});
+
 Deno.test("rejects the webhook and persists nothing when the HMAC is invalid", async () => {
   const fake = makeFakeSupabase();
   const payload = JSON.stringify(shopifyOrderPayload());

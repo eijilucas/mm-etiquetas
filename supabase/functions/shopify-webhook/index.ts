@@ -55,6 +55,19 @@ export async function handleShopifyWebhook(req: Request, deps: Deps = {}): Promi
     });
   }
 
+  // This endpoint also receives orders/updated (address edits, discounts,
+  // etc.), which fires regardless of payment status -- without this check
+  // an order still awaiting payment (Pix/boleto, financial_status
+  // "pending") would land in pending_approval exactly like a real,
+  // ready-to-ship paid order. Matches the same "paid" filter reconciliation
+  // uses (fetchPaidUnfulfilledOrders).
+  if (order.financial_status !== "paid") {
+    return new Response(JSON.stringify({ ok: true, skipped: "not_paid" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
   const eventId = req.headers.get("X-Shopify-Webhook-Id") ?? undefined;
   const supabase = deps.supabase ?? createServiceClient(config);
 
