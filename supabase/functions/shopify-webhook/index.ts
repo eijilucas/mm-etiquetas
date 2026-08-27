@@ -68,6 +68,18 @@ export async function handleShopifyWebhook(req: Request, deps: Deps = {}): Promi
     });
   }
 
+  // Same idea for an order already fulfilled by other means (e.g. shipped
+  // through a different app/process entirely, never touched by our
+  // pipeline) -- reconciliation's own Shopify query already excludes these
+  // (fetchPaidUnfulfilledOrders filters fulfillment_status=unfulfilled);
+  // the webhook path needs the same check since it has no such filter.
+  if (order.fulfillment_status === "fulfilled") {
+    return new Response(JSON.stringify({ ok: true, skipped: "already_fulfilled" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
   const eventId = req.headers.get("X-Shopify-Webhook-Id") ?? undefined;
   const supabase = deps.supabase ?? createServiceClient(config);
 

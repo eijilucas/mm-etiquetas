@@ -141,6 +141,30 @@ Deno.test("does not persist an order whose financial_status isn't paid (orders/u
   });
 });
 
+// Confirmed live: an order fulfilled entirely outside this system (a
+// different app/process) still fired orders/updated later and landed in
+// pending_approval looking like a fresh, ready-to-ship order.
+Deno.test("does not persist an order that's already fulfilled elsewhere", async () => {
+  const fake = makeFakeSupabase();
+  const payload = JSON.stringify({ ...shopifyOrderPayload(), fulfillment_status: "fulfilled" });
+  const hmac = await sign(payload, secret);
+
+  await withShopifyGraphqlMock(async () => {
+    const req = new Request("http://localhost/functions/v1/shopify-webhook/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Shopify-Hmac-Sha256": hmac },
+      body: payload,
+    });
+
+    // deno-lint-ignore no-explicit-any
+    const res = await handleShopifyWebhook(req, { config, supabase: fake as any });
+
+    assertEquals(res.status, 200);
+    assertEquals(await res.json(), { ok: true, skipped: "already_fulfilled" });
+    assertEquals(fake.table("orders_shipping").length, 0);
+  });
+});
+
 Deno.test("rejects the webhook and persists nothing when the HMAC is invalid", async () => {
   const fake = makeFakeSupabase();
   const payload = JSON.stringify(shopifyOrderPayload());
