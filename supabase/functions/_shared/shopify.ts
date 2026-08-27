@@ -59,6 +59,18 @@ export interface ShopifyOrder {
   // when it captures Brazil-specific checkout data. Not every order has
   // them (depends on checkout flow/store), so both are optional.
   note_attributes?: { name: string; value: string }[];
+  // Present on both the REST GET response and the orders/paid|updated
+  // webhook payload — used to recover the tracking code/carrier for an
+  // order fulfilled entirely outside this system (see shopify-webhook).
+  fulfillments?: { status: string; tracking_company: string | null; tracking_number: string | null }[];
+}
+
+// The most recent successful fulfillment's tracking info, or nulls if the
+// order has none (not yet fulfilled, or fulfilled with no tracking entered).
+export function latestFulfillmentTracking(order: ShopifyOrder): { trackingCode: string | null; trackingCompany: string | null } {
+  const successful = (order.fulfillments ?? []).filter((f) => f.status === "success");
+  const latest = successful[successful.length - 1];
+  return { trackingCode: latest?.tracking_number ?? null, trackingCompany: latest?.tracking_company ?? null };
 }
 
 export interface ShopifyOrdersListResponse {
@@ -243,7 +255,11 @@ async function fetchAccessToken(store: StoreConfig): Promise<string> {
   return body.access_token as string;
 }
 
-async function shopifyFetch<T>(store: StoreConfig, path: string, init: RequestInit = {}): Promise<T> {
+async function shopifyFetchRaw(
+  store: StoreConfig,
+  path: string,
+  init: RequestInit = {},
+): Promise<{ body: unknown; linkHeader: string | null }> {
   const accessToken = await fetchAccessToken(store);
   const url = path.startsWith("http") ? path : `${baseUrl(store)}${path}`;
   const response = await fetch(url, {
@@ -261,7 +277,22 @@ async function shopifyFetch<T>(store: StoreConfig, path: string, init: RequestIn
   if (!response.ok) {
     throw new ShopifyApiError(`Shopify API error ${response.status}`, response.status, body);
   }
+  return { body, linkHeader: response.headers.get("link") };
+}
+
+async function shopifyFetch<T>(store: StoreConfig, path: string, init: RequestInit = {}): Promise<T> {
+  const { body } = await shopifyFetchRaw(store, path, init);
   return body as T;
+}
+
+// Shopify's REST list endpoints paginate via a cursor URL in the Link
+// header (`<url>; rel="next"`), not an offset -- this pulls it out, or null
+// once the last page is reached.
+function parseNextLink(linkHeader: string | null): string | null {
+  if (!linkHeader) return null;
+  const nextPart = linkHeader.split(",").map((part) => part.trim()).find((part) => part.endsWith('rel="next"'));
+  const match = nextPart?.match(/^<([^>]+)>/);
+  return match ? match[1] : null;
 }
 
 function isRetryableStatus(error: unknown): boolean {
@@ -294,6 +325,43 @@ export async function fetchPaidUnfulfilledOrders(
     },
     { label: "shopify.fetchPaidUnfulfilledOrders", isRetryable: isRetryableStatus },
   );
+}
+
+// One-off backfill for orders fulfilled outside this system before the
+// "external" recording existed (or from any webhook delivery that was
+// missed) -- paginates through every matching page instead of just the
+// first 250, since a real backfill window can easily exceed that.
+export async function fetchPaidFulfilledOrders(
+  store: StoreConfig,
+  params?: { createdAtMin?: string },
+): Promise<ShopifyOrder[]> {
+  const search = new URLSearchParams({
+    financial_status: "paid",
+    fulfillment_status: "fulfilled",
+    status: "any",
+    limit: "250",
+  });
+  if (params?.createdAtMin) {
+    search.set("created_at_min", params.createdAtMin);
+  }
+
+  const orders: ShopifyOrder[] = [];
+  let path: string | null = `/orders.json?${search.toString()}`;
+  let pagesFetched = 0;
+  const maxPages = 40; // hard cap ~10k orders, just to bound a runaway loop
+
+  while (path && pagesFetched < maxPages) {
+    const currentPath: string = path;
+    const { body, linkHeader } = await withRetry(
+      () => shopifyFetchRaw(store, currentPath),
+      { label: "shopify.fetchPaidFulfilledOrders", isRetryable: isRetryableStatus },
+    );
+    orders.push(...(body as ShopifyOrdersListResponse).orders);
+    path = parseNextLink(linkHeader);
+    pagesFetched += 1;
+  }
+
+  return orders;
 }
 
 export async function fetchOrderById(store: StoreConfig, shopifyOrderId: string): Promise<ShopifyOrder> {

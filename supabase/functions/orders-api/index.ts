@@ -1,11 +1,12 @@
 import { loadConfig } from "../_shared/config.ts";
 import type { AppConfig } from "../_shared/config.ts";
 import { getAuthenticatedUser } from "../_shared/auth.ts";
-import { createServiceClient, toApiShape } from "../_shared/db.ts";
+import { createServiceClient, toApiShape, upsertExternalCandidate } from "../_shared/db.ts";
 import type { OrderShippingRow, ShippingStatus } from "../_shared/db.ts";
 import { runShippingPipeline, cancelOrderLabel, manualTrackingSync, checkApprovalIssues } from "../_shared/pipeline.ts";
 import { runReconciliation, checkStuckOrders, syncPostedOrders, retryStalledTracking } from "../_shared/reconciliation.ts";
 import { fetchAccountBalance, fetchDeclarationPdfUrl, fetchTrackingBatch } from "../_shared/melhorenvio.ts";
+import { fetchPaidFulfilledOrders, mapShopifyOrderToCandidate, latestFulfillmentTracking } from "../_shared/shopify.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
 const PROCESSING_STATUSES: ShippingStatus[] = [
@@ -119,6 +120,45 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
         .order("held_at", { ascending: false });
       if (error) throw error;
       return json({ orders: (data as OrderShippingRow[]).map(toApiShape) });
+    }
+
+    // Read-only history: orders fulfilled entirely outside this system (see
+    // shopify-webhook's "external" recording). Nothing here is ever acted
+    // on -- no approve/hold/archive route touches this status.
+    if (req.method === "GET" && segments[0] === "external") {
+      const { data, error } = await supabase
+        .from("orders_shipping")
+        .select("id, store_key, shopify_order_id, shopify_order_number, customer_name, total_price, currency, tracking_code, tracking_company, paid_at")
+        .eq("status", "external")
+        .order("paid_at", { ascending: false });
+      if (error) throw error;
+      return json({ orders: (data as OrderShippingRow[]).map(toApiShape) });
+    }
+
+    // One-off backfill for orders fulfilled externally before "external"
+    // recording existed, or from any webhook delivery that was missed --
+    // walks Shopify's order history directly instead of waiting for the
+    // next event on each order. Same upsertExternalCandidate the webhook
+    // uses, so it never touches an order already further along in our own
+    // pipeline. { days } defaults to 90; pass a bigger window if needed.
+    if (req.method === "POST" && segments[0] === "external" && segments[1] === "backfill") {
+      const body = (await req.json().catch(() => ({}))) as { days?: number };
+      const days = body.days ?? 90;
+      const createdAtMin = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+      let recorded = 0;
+      let skipped = 0;
+      for (const store of config.shopify.stores) {
+        const orders = await fetchPaidFulfilledOrders(store, { createdAtMin });
+        for (const order of orders) {
+          const candidate = await mapShopifyOrderToCandidate(order, store);
+          const { trackingCode, trackingCompany } = latestFulfillmentTracking(order);
+          const row = await upsertExternalCandidate(supabase, candidate, store.key, trackingCode, trackingCompany);
+          if (row.status === "external") recorded += 1;
+          else skipped += 1;
+        }
+      }
+      return json({ recorded, skipped });
     }
 
     // Pre-flight for a batch approval: estimates each selected order's

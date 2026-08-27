@@ -12,7 +12,8 @@ export type ShippingStatus =
   | "tracking_synced"
   | "held"
   | "failed"
-  | "archived";
+  | "archived"
+  | "external";
 
 export interface OrderShippingRow {
   id: string;
@@ -225,5 +226,79 @@ export async function upsertPendingCandidate(
   if (error) throw error;
 
   log({ storeKey, shopifyOrderId: candidate.shopifyOrderId, created: true }, "candidate_upserted_pending_approval");
+  return data as OrderShippingRow;
+}
+
+// Records an order fulfilled entirely outside this system (see the webhook's
+// "already_fulfilled" check) so it isn't just silently dropped -- purely for
+// visibility/history, never a queue anything gets approved out of. Same
+// read-then-conditional-write shape as upsertPendingCandidate, but the only
+// safe transitions into "external" are from nowhere (brand new row) or from
+// "pending_approval" (we hadn't started on it yet) -- anything already
+// further along in our own pipeline, held, or archived is left untouched.
+export async function upsertExternalCandidate(
+  supabase: SupabaseClient,
+  candidate: OrderCandidate,
+  storeKey: string,
+  trackingCode: string | null,
+  trackingCompany: string | null,
+): Promise<OrderShippingRow> {
+  const { data: existing, error: selectError } = await supabase
+    .from("orders_shipping")
+    .select("*")
+    .eq("store_key", storeKey)
+    .eq("shopify_order_id", candidate.shopifyOrderId)
+    .maybeSingle();
+
+  if (selectError) throw selectError;
+
+  if (existing && existing.status !== "pending_approval" && existing.status !== "external") {
+    log(
+      { storeKey, shopifyOrderId: candidate.shopifyOrderId, status: existing.status },
+      "external_candidate_skipped_not_ours_to_touch",
+    );
+    return existing as OrderShippingRow;
+  }
+
+  const mutableFields = {
+    financial_status: candidate.financialStatus,
+    fulfillment_status: candidate.fulfillmentStatus,
+    customer_name: candidate.customerName,
+    customer_email: candidate.customerEmail,
+    total_price: candidate.totalPrice,
+    paid_at: candidate.paidAt ? candidate.paidAt.toISOString() : null,
+    items: candidate.items,
+    shipping_address: candidate.shippingAddress ?? {},
+    tracking_code: trackingCode,
+    tracking_company: trackingCompany,
+    status: "external" as const,
+  };
+
+  if (existing) {
+    const { data, error } = await supabase
+      .from("orders_shipping")
+      .update(mutableFields)
+      .eq("id", existing.id)
+      .select("*")
+      .single();
+    if (error) throw error;
+    log({ storeKey, shopifyOrderId: candidate.shopifyOrderId, created: false }, "candidate_upserted_external");
+    return data as OrderShippingRow;
+  }
+
+  const { data, error } = await supabase
+    .from("orders_shipping")
+    .insert({
+      store_key: storeKey,
+      shopify_order_id: candidate.shopifyOrderId,
+      shopify_order_number: candidate.shopifyOrderNumber,
+      shopify_graphql_id: candidate.shopifyGraphqlId,
+      ...mutableFields,
+    })
+    .select("*")
+    .single();
+  if (error) throw error;
+
+  log({ storeKey, shopifyOrderId: candidate.shopifyOrderId, created: true }, "candidate_upserted_external");
   return data as OrderShippingRow;
 }

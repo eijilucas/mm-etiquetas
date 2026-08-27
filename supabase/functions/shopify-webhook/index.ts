@@ -1,8 +1,8 @@
 import { loadConfig, getStoreByKey } from "../_shared/config.ts";
 import type { AppConfig } from "../_shared/config.ts";
-import { verifyShopifyHmac, logInvalidWebhook, mapShopifyOrderToCandidate } from "../_shared/shopify.ts";
+import { verifyShopifyHmac, logInvalidWebhook, mapShopifyOrderToCandidate, latestFulfillmentTracking } from "../_shared/shopify.ts";
 import type { ShopifyOrder } from "../_shared/shopify.ts";
-import { createServiceClient, upsertPendingCandidate } from "../_shared/db.ts";
+import { createServiceClient, upsertPendingCandidate, upsertExternalCandidate } from "../_shared/db.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
 export interface Deps {
@@ -68,23 +68,29 @@ export async function handleShopifyWebhook(req: Request, deps: Deps = {}): Promi
     });
   }
 
-  // Same idea for an order already fulfilled by other means (e.g. shipped
-  // through a different app/process entirely, never touched by our
-  // pipeline) -- reconciliation's own Shopify query already excludes these
-  // (fetchPaidUnfulfilledOrders filters fulfillment_status=unfulfilled);
-  // the webhook path needs the same check since it has no such filter.
-  if (order.fulfillment_status === "fulfilled") {
-    return new Response(JSON.stringify({ ok: true, skipped: "already_fulfilled" }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
-  const eventId = req.headers.get("X-Shopify-Webhook-Id") ?? undefined;
   const supabase = deps.supabase ?? createServiceClient(config);
 
   try {
     const candidate = await mapShopifyOrderToCandidate(order, store);
+
+    // An order already fulfilled by other means (bought on Melhor Envio's
+    // site by hand, fulfilled directly in Shopify's admin -- never touched
+    // by our pipeline) doesn't belong in pending_approval, but silently
+    // dropping it would leave zero record it ever existed. Recorded as
+    // "external" for visibility/history only; reconciliation's own Shopify
+    // query already excludes these upstream (fetchPaidUnfulfilledOrders
+    // filters fulfillment_status=unfulfilled), so the webhook is the only
+    // place that ever sees them.
+    if (order.fulfillment_status === "fulfilled") {
+      const { trackingCode, trackingCompany } = latestFulfillmentTracking(order);
+      await upsertExternalCandidate(supabase, candidate, store.key, trackingCode, trackingCompany);
+      return new Response(JSON.stringify({ ok: true, recorded: "external" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    const eventId = req.headers.get("X-Shopify-Webhook-Id") ?? undefined;
     await upsertPendingCandidate(supabase, candidate, store.key, eventId);
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,

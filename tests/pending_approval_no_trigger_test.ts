@@ -141,12 +141,19 @@ Deno.test("does not persist an order whose financial_status isn't paid (orders/u
   });
 });
 
-// Confirmed live: an order fulfilled entirely outside this system (a
-// different app/process) still fired orders/updated later and landed in
-// pending_approval looking like a fresh, ready-to-ship order.
-Deno.test("does not persist an order that's already fulfilled elsewhere", async () => {
+// Confirmed live: an order fulfilled entirely outside this system (bought
+// on Melhor Envio's site by hand, fulfilled directly in Shopify's admin)
+// still fired orders/updated later and landed in pending_approval looking
+// like a fresh, ready-to-ship order. It must never re-enter the approval
+// queue, but it's recorded as "external" instead of silently dropped, so
+// there's still a record it exists.
+Deno.test("records an order that's already fulfilled elsewhere as external, not pending_approval", async () => {
   const fake = makeFakeSupabase();
-  const payload = JSON.stringify({ ...shopifyOrderPayload(), fulfillment_status: "fulfilled" });
+  const payload = JSON.stringify({
+    ...shopifyOrderPayload(),
+    fulfillment_status: "fulfilled",
+    fulfillments: [{ status: "success", tracking_company: "Other", tracking_number: "AD123456789BR" }],
+  });
   const hmac = await sign(payload, secret);
 
   await withShopifyGraphqlMock(async () => {
@@ -160,8 +167,12 @@ Deno.test("does not persist an order that's already fulfilled elsewhere", async 
     const res = await handleShopifyWebhook(req, { config, supabase: fake as any });
 
     assertEquals(res.status, 200);
-    assertEquals(await res.json(), { ok: true, skipped: "already_fulfilled" });
-    assertEquals(fake.table("orders_shipping").length, 0);
+    assertEquals(await res.json(), { ok: true, recorded: "external" });
+    const rows = fake.table("orders_shipping");
+    assertEquals(rows.length, 1);
+    assertEquals(rows[0].status, "external");
+    assertEquals(rows[0].tracking_code, "AD123456789BR");
+    assertEquals(rows[0].tracking_company, "Other");
   });
 });
 
@@ -615,4 +626,87 @@ Deno.test("refuses to archive an order that isn't held or failed", async () => {
 
   assertEquals(res.status, 400);
   assertEquals(fake.table("orders_shipping")[0].status, "pending_approval");
+});
+
+// Covers the two things most likely to break silently: pagination (Shopify
+// returns the Link header cursor, not an offset) and never overwriting an
+// order that's already further along in our own pipeline.
+Deno.test("external backfill paginates through Shopify and skips orders already in our pipeline", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push({
+    id: "order-already-tracked",
+    store_key: "test",
+    shopify_order_id: "9001",
+    status: "tracking_synced",
+    tracking_code: "REAL-CODE-123",
+  });
+
+  function externalOrderPayload(id: number) {
+    return {
+      id,
+      order_number: id,
+      admin_graphql_api_id: `gid://shopify/Order/${id}`,
+      financial_status: "paid",
+      fulfillment_status: "fulfilled",
+      currency: "BRL",
+      total_price: "150.00",
+      processed_at: "2026-08-20T09:00:00Z",
+      customer: { first_name: "Maria", last_name: "Lima", email: "maria@example.com" },
+      shipping_address: { address1: "Rua Z", city: "Recife", province_code: "PE", zip: "50000-000" },
+      line_items: [{ id: 1, title: "Boné", sku: "BON-2", quantity: 1, price: "150.00", grams: 200 }],
+      fulfillments: [{ status: "success", tracking_company: "Other", tracking_number: `TRACK-${id}` }],
+    };
+  }
+
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    const body = init?.body ? JSON.parse(init.body as string) : undefined;
+
+    if (url.includes("/admin/oauth/access_token")) {
+      return new Response(JSON.stringify({ access_token: "shpat_test", scope: "read_orders", expires_in: 86399 }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url.includes("/orders.json") && url.includes("page_info=next")) {
+      return new Response(JSON.stringify({ orders: [externalOrderPayload(9003)] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url.includes("/orders.json")) {
+      return new Response(JSON.stringify({ orders: [{ ...externalOrderPayload(9001), id: 9001, order_number: 9001 }, externalOrderPayload(9002)] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", Link: '<https://test.myshopify.com/admin/api/2024-01/orders.json?page_info=next>; rel="next"' },
+      });
+    }
+    if (url.includes("/graphql.json") && typeof body?.query === "string" && body.query.includes("currentQuantity")) {
+      return new Response(JSON.stringify({
+        data: { order: { currentTotalPriceSet: { shopMoney: { amount: "150.00" } }, lineItems: { edges: [{ node: { id: "gid://shopify/LineItem/1", currentQuantity: 1 } }] } } },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    throw new Error(`Unexpected fetch call: ${url}`);
+  }) as typeof fetch;
+
+  let json: { recorded: number; skipped: number };
+  try {
+    const req = new Request("http://localhost/functions/v1/orders-api/external/backfill", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+      body: JSON.stringify({ days: 90 }),
+    });
+    // deno-lint-ignore no-explicit-any
+    const res = await handleOrdersApi(req, { config, supabase: fake as any });
+    assertEquals(res.status, 200);
+    json = await res.json();
+  } finally {
+    globalThis.fetch = original;
+  }
+
+  // 3 orders seen across both pages, but #9001 already exists as
+  // tracking_synced -- skipped, never overwritten.
+  assertEquals(json.recorded, 2);
+  assertEquals(json.skipped, 1);
+
+  const rows = fake.table("orders_shipping");
+  assertEquals(rows.find((r) => r.shopify_order_id === "9001")?.status, "tracking_synced");
+  assertEquals(rows.find((r) => r.shopify_order_id === "9001")?.tracking_code, "REAL-CODE-123");
+  assertEquals(rows.find((r) => r.shopify_order_id === "9002")?.status, "external");
+  assertEquals(rows.find((r) => r.shopify_order_id === "9003")?.status, "external");
+  assertEquals(rows.find((r) => r.shopify_order_id === "9003")?.tracking_code, "TRACK-9003");
 });

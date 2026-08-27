@@ -60,6 +60,7 @@
       <button class="tab-btn" data-tab="posted">Postados</button>
       <button class="tab-btn" data-tab="held">Em espera (held)</button>
       <button class="tab-btn" data-tab="manual-tracking">Rastreio</button>
+      <button class="tab-btn" data-tab="external">Processados por fora</button>
     </div>
 
     <section class="tab-panel active" id="tab-pending">
@@ -201,6 +202,34 @@
         </table>
         </div>
         <div class="empty-state" id="manualTrackingEmpty" style="display:none;">Nenhum pedido encontrado.</div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-external">
+      <div class="card">
+        <div class="toolbar">
+          <button class="btn" id="backfillExternalBtn">Buscar historico (90 dias)</button>
+          <button class="btn" id="refreshExternalBtn">Atualizar</button>
+          <input type="text" class="text-input" id="externalSearch" placeholder="Buscar por numero do pedido ou cliente" style="margin-left: auto;" />
+        </div>
+        <p class="text-label" style="margin: 0 0 16px;">Pedidos pagos que foram fulfillados direto no Shopify, fora deste painel — so historico, nenhuma acao aqui compra frete ou envia nada.</p>
+        <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Pedido</th>
+              <th>Loja</th>
+              <th>Cliente</th>
+              <th>Valor</th>
+              <th>Rastreio</th>
+              <th>Transportadora</th>
+              <th>Pago em</th>
+            </tr>
+          </thead>
+          <tbody id="externalTableBody"></tbody>
+        </table>
+        </div>
+        <div class="empty-state" id="externalEmpty" style="display:none;">Nenhum pedido encontrado.</div>
       </div>
     </section>
   </main>

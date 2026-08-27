@@ -477,6 +477,41 @@ function renderHeldRows() {
   });
 }
 
+let externalOrders = [];
+
+// Read-only history: orders fulfilled entirely outside this system (see
+// shopify-webhook's "external" recording) — no action here ever buys
+// shipping or contacts the customer, so there's nothing to wire up beyond
+// listing and searching.
+async function loadExternal() {
+  const { orders } = await api("/external");
+  externalOrders = orders;
+  renderExternalRows();
+  return orders;
+}
+
+function renderExternalRows() {
+  const tbody = document.getElementById("externalTableBody");
+  const empty = document.getElementById("externalEmpty");
+  const orders = filterBySearch(externalOrders, "externalSearch");
+  tbody.innerHTML = "";
+  empty.style.display = orders.length === 0 ? "block" : "none";
+
+  for (const order of orders) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${orderRefHtml(order)}</td>
+      <td>${storeCell(order)}</td>
+      <td>${order.customerName ?? "-"}</td>
+      <td>${formatCurrency(order.totalPrice, order.currency)}</td>
+      <td>${order.trackingCode ?? "-"}</td>
+      <td>${order.trackingCompany ?? "-"}</td>
+      <td>${formatDate(order.paidAt)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
 // Candidates for the Rastreio manual tab, three flavors:
 //  - status "tracking_ready": syncTrackingStep already fetched and stored
 //    the code (this is now the normal path for every order — sending it to
@@ -709,6 +744,7 @@ function setupTabs() {
       // regardless of tab) instead of fetching it a second time.
       if (btn.dataset.tab === "held") loadHeld();
       if (btn.dataset.tab === "manual-tracking") loadManualTracking(processingOrders);
+      if (btn.dataset.tab === "external") loadExternal();
     });
   });
 }
@@ -840,6 +876,7 @@ function setupToolbar() {
   document.getElementById("releasedSearch").addEventListener("input", renderReleasedRows);
   document.getElementById("postedSearch").addEventListener("input", renderPostedRows);
   document.getElementById("heldSearch").addEventListener("input", renderHeldRows);
+  document.getElementById("externalSearch").addEventListener("input", renderExternalRows);
 
   document.getElementById("selectAllReleasedBtn").addEventListener("click", () => {
     const checkboxes = document.querySelectorAll('#releasedTableBody input[type="checkbox"]');
@@ -929,6 +966,24 @@ function setupToolbar() {
   document.getElementById("refreshReleasedBtn").addEventListener("click", loadProcessing);
   document.getElementById("refreshPostedBtn").addEventListener("click", loadProcessing);
   document.getElementById("refreshHeldBtn").addEventListener("click", loadHeld);
+  document.getElementById("refreshExternalBtn").addEventListener("click", loadExternal);
+
+  document.getElementById("backfillExternalBtn").addEventListener("click", async (event) => {
+    const btn = event.currentTarget;
+    btn.disabled = true;
+    const originalText = btn.textContent;
+    btn.textContent = "Buscando...";
+    try {
+      const { recorded, skipped } = await api("/external/backfill", { method: "POST", body: JSON.stringify({ days: 90 }) });
+      await loadExternal();
+      await showAlert(`${recorded} pedido(s) adicionado(s) ao historico. ${skipped} ja estavam registrados ou em andamento no painel.`);
+    } catch (error) {
+      await showAlert(`Erro ao buscar historico: ${error.message}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  });
 }
 
 // Extra "does the packer actually have stock" gate before etiquetas are
@@ -958,6 +1013,7 @@ async function loadAll() {
     const activeTab = document.querySelector(".tab-btn.active")?.dataset.tab;
     const tasks = [loadPending(), loadProcessing()];
     if (activeTab === "held") tasks.push(loadHeld());
+    if (activeTab === "external") tasks.push(loadExternal());
     const [pendingList, processingList] = await Promise.all(tasks);
     // Depends on processingList, so it runs after — reuses it instead of
     // fetching /processing a second time.
