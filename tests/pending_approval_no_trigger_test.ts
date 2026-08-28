@@ -710,3 +710,27 @@ Deno.test("external backfill paginates through Shopify and skips orders already 
   assertEquals(rows.find((r) => r.shopify_order_id === "9003")?.status, "external");
   assertEquals(rows.find((r) => r.shopify_order_id === "9003")?.tracking_code, "TRACK-9003");
 });
+
+Deno.test("kpi-counts returns head:true counts per bucket, not full rows", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push(
+    { id: "o1", store_key: "test", shopify_order_id: "1", status: "pending_approval" },
+    { id: "o2", store_key: "test", shopify_order_id: "2", status: "pending_approval" },
+    { id: "o3", store_key: "test", shopify_order_id: "3", status: "approved" },
+    { id: "o4", store_key: "test", shopify_order_id: "4", status: "tracking_ready" },
+    { id: "o5", store_key: "test", shopify_order_id: "5", status: "tracking_synced" },
+    { id: "o6", store_key: "test", shopify_order_id: "6", status: "failed" },
+    { id: "o7", store_key: "test", shopify_order_id: "7", status: "held" },
+    { id: "o8", store_key: "test", shopify_order_id: "8", status: "external" },
+  );
+
+  const req = new Request("http://localhost/functions/v1/orders-api/kpi-counts", {
+    headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+  });
+
+  // deno-lint-ignore no-explicit-any
+  const res = await handleOrdersApi(req, { config, supabase: fake as any });
+
+  assertEquals(res.status, 200);
+  assertEquals(await res.json(), { pending: 2, processing: 2, completed: 1, failed: 1 });
+});

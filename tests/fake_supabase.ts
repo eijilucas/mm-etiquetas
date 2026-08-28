@@ -44,7 +44,9 @@ function nextId(): string {
   return `fake-id-${idCounter}`;
 }
 
-class FakeQueryBuilder implements PromiseLike<{ data: unknown; error: unknown }> {
+type QueryResult = { data: unknown; error: unknown; count?: number | null };
+
+class FakeQueryBuilder implements PromiseLike<QueryResult> {
   #table: Row[];
   #op: "select" | "insert" | "update" = "select";
   #filters: Filter[] = [];
@@ -53,13 +55,17 @@ class FakeQueryBuilder implements PromiseLike<{ data: unknown; error: unknown }>
   #orderCol: string | undefined;
   #orderAsc = true;
   #singleMode: "none" | "single" | "maybeSingle" = "none";
+  #wantCount = false;
+  #head = false;
 
   constructor(table: Row[]) {
     this.#table = table;
   }
 
-  select(_cols = "*"): this {
+  select(_cols = "*", opts?: { count?: string; head?: boolean }): this {
     if (this.#op === "select") this.#op = "select";
+    this.#wantCount = !!opts?.count;
+    this.#head = !!opts?.head;
     return this;
   }
 
@@ -136,7 +142,7 @@ class FakeQueryBuilder implements PromiseLike<{ data: unknown; error: unknown }>
     return this;
   }
 
-  #execute(): { data: unknown; error: unknown } {
+  #execute(): QueryResult {
     if (this.#op === "insert") {
       const now = new Date().toISOString();
       const row: Row = { id: nextId(), created_at: now, updated_at: now, ...this.#insertRow };
@@ -169,11 +175,14 @@ class FakeQueryBuilder implements PromiseLike<{ data: unknown; error: unknown }>
     if (this.#singleMode === "single" || this.#singleMode === "maybeSingle") {
       return { data: rows[0] ?? null, error: null };
     }
+    if (this.#wantCount) {
+      return { data: this.#head ? null : rows, error: null, count: rows.length };
+    }
     return { data: rows, error: null };
   }
 
-  then<TResult1 = { data: unknown; error: unknown }, TResult2 = never>(
-    onfulfilled?: ((value: { data: unknown; error: unknown }) => TResult1 | PromiseLike<TResult1>) | null,
+  then<TResult1 = QueryResult, TResult2 = never>(
+    onfulfilled?: ((value: QueryResult) => TResult1 | PromiseLike<TResult1>) | null,
     onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
   ): PromiseLike<TResult1 | TResult2> {
     return Promise.resolve(this.#execute()).then(onfulfilled, onrejected);

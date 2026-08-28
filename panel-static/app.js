@@ -717,18 +717,19 @@ function setupManualTracking() {
   });
 }
 
-function renderKpis(pendingList, processingList) {
-  document.getElementById("kpiPending").textContent = pendingList.length;
-  document.getElementById("kpiProcessing").textContent = processingList.filter((o) => o.status !== "tracking_synced" && o.status !== "failed").length;
-  document.getElementById("kpiCompleted").textContent = processingList.filter((o) => o.status === "tracking_synced").length;
-  document.getElementById("kpiFailed").textContent = processingList.filter((o) => o.status === "failed").length;
+function renderKpis(counts) {
+  document.getElementById("kpiPending").textContent = counts.pending;
+  document.getElementById("kpiProcessing").textContent = counts.processing;
+  document.getElementById("kpiCompleted").textContent = counts.completed;
+  document.getElementById("kpiFailed").textContent = counts.failed;
 }
 
-// Used after actions that only touch one tab (approve, hold, archive, ...) —
-// loadAll has its own cheaper path that reuses data it already fetched.
+// /kpi-counts is a head:true count, not a row fetch — the KPI row is always
+// visible regardless of which tab is open, so this (unlike every other
+// load*/refresh* here) runs on every tick no matter what, and needs to stay
+// cheap enough that that's fine.
 async function refreshKpis() {
-  const [pending, processing] = await Promise.all([api("/pending"), api("/processing")]);
-  renderKpis(pending.orders, processing.orders);
+  renderKpis(await api("/kpi-counts"));
 }
 
 function setupTabs() {
@@ -738,12 +739,13 @@ function setupTabs() {
       document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
       btn.classList.add("active");
       document.getElementById(`tab-${btn.dataset.tab}`).classList.add("active");
-      // Held is only kept fresh by the background poll while its tab is
-      // active (see loadAll), so fetch once on first switch. Rastreio reuses
-      // whatever /processing already has cached (refreshed every tick
-      // regardless of tab) instead of fetching it a second time.
+      // Every tab's table is only kept fresh by the background poll while
+      // it's the active one (see loadAll) — fetch once on switch so it
+      // never shows stale/empty data on first click.
+      if (btn.dataset.tab === "pending") loadPending();
+      if (btn.dataset.tab === "released" || btn.dataset.tab === "posted") loadProcessing();
       if (btn.dataset.tab === "held") loadHeld();
-      if (btn.dataset.tab === "manual-tracking") loadManualTracking(processingOrders);
+      if (btn.dataset.tab === "manual-tracking") loadManualTracking();
       if (btn.dataset.tab === "external") loadExternal();
     });
   });
@@ -1004,21 +1006,22 @@ function setupStockConfirmDialog() {
   });
 }
 
-// Pending/processing feed the always-visible KPI row, so they're fetched
-// every tick regardless of which tab is open. Held and Rastreio aren't part
-// of the KPIs, so they're only fetched when their own tab is the one showing
-// — no point re-downloading a table nobody is looking at every 30s.
+// KPI counts are cheap (head:true, see refreshKpis) so they're fetched every
+// tick regardless of which tab is open. Every full table (Fila, Liberados/
+// Postados, Held, Rastreio, external) is only fetched while its own tab is
+// the one showing — no point re-downloading a table nobody is looking at
+// every minute.
 async function loadAll() {
   try {
     const activeTab = document.querySelector(".tab-btn.active")?.dataset.tab;
-    const tasks = [loadPending(), loadProcessing()];
+    const tasks = [api("/kpi-counts")];
+    if (activeTab === "pending") tasks.push(loadPending());
+    if (activeTab === "released" || activeTab === "posted") tasks.push(loadProcessing());
     if (activeTab === "held") tasks.push(loadHeld());
     if (activeTab === "external") tasks.push(loadExternal());
-    const [pendingList, processingList] = await Promise.all(tasks);
-    // Depends on processingList, so it runs after — reuses it instead of
-    // fetching /processing a second time.
-    if (activeTab === "manual-tracking") await loadManualTracking(processingList);
-    renderKpis(pendingList, processingList);
+    if (activeTab === "manual-tracking") tasks.push(loadManualTracking());
+    const [counts] = await Promise.all(tasks);
+    renderKpis(counts);
   } catch (error) {
     console.error(error);
   }

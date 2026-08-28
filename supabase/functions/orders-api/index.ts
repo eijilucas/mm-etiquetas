@@ -87,6 +87,24 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
   const manualTracking = deps.manualTracking ?? manualTrackingSync;
 
   try {
+    // The KPI row is always visible regardless of which tab is open, so
+    // loadAll polls this on every tick — head:true asks Postgrest for just
+    // the row count, not the rows, which is what makes that safe to do
+    // every minute without re-downloading Fila/Liberados/Postados in full
+    // just to display four numbers.
+    if (req.method === "GET" && segments[0] === "kpi-counts") {
+      const [pending, processing, completed, failed] = await Promise.all([
+        supabase.from("orders_shipping").select("*", { count: "exact", head: true }).eq("status", "pending_approval"),
+        supabase.from("orders_shipping").select("*", { count: "exact", head: true }).in("status", ["approved", "cart_created", "purchased", "label_generated", "tracking_ready"]),
+        supabase.from("orders_shipping").select("*", { count: "exact", head: true }).eq("status", "tracking_synced"),
+        supabase.from("orders_shipping").select("*", { count: "exact", head: true }).eq("status", "failed"),
+      ]);
+      for (const result of [pending, processing, completed, failed]) {
+        if (result.error) throw result.error;
+      }
+      return json({ pending: pending.count ?? 0, processing: processing.count ?? 0, completed: completed.count ?? 0, failed: failed.count ?? 0 });
+    }
+
     if (req.method === "GET" && segments[0] === "pending") {
       const { data, error } = await supabase
         .from("orders_shipping")
