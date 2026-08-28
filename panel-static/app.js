@@ -677,43 +677,61 @@ function setupManualTracking() {
     updateManualTrackingBulkButtons();
   });
 
-  document.getElementById("bulkSendTrackingBtn").addEventListener("click", async () => {
-    const ids = Array.from(selectedManualTracking);
-    const errors = [];
-    for (const id of ids) {
-      const order = manualTrackingOrders.find((o) => o.id === id);
-      const trackingCode = order ? resolveManualTrackingCode(order) : null;
-      if (!trackingCode) continue; // no code yet for this one — skip, not an error
-      try {
-        await api(`/${id}/tracking`, { method: "POST", body: JSON.stringify({ trackingCode }) });
-      } catch (error) {
-        errors.push(`${id}: ${error.message}`);
+  document.getElementById("bulkSendTrackingBtn").addEventListener("click", async (event) => {
+    const btn = event.currentTarget;
+    // Without this, a double-click fires the loop twice over the same
+    // selection before the first pass finishes -- the second pass then
+    // "fails" on every order the first pass already sent (both our own
+    // "ja esta com rastreio sincronizado" guard and Shopify's own
+    // "unfulfillable status=closed" correctly reject it, but it reads as an
+    // error even though nothing is actually wrong).
+    btn.disabled = true;
+    try {
+      const ids = Array.from(selectedManualTracking);
+      const errors = [];
+      for (const id of ids) {
+        const order = manualTrackingOrders.find((o) => o.id === id);
+        const trackingCode = order ? resolveManualTrackingCode(order) : null;
+        if (!trackingCode) continue; // no code yet for this one — skip, not an error
+        try {
+          await api(`/${id}/tracking`, { method: "POST", body: JSON.stringify({ trackingCode }) });
+        } catch (error) {
+          errors.push(`${id}: ${error.message}`);
+        }
       }
+      selectedManualTracking.clear();
+      await loadManualTracking();
+      await refreshKpis();
+      if (errors.length > 0) await showAlert(`Alguns pedidos falharam ao enviar:\n${errors.join("\n")}`);
+    } finally {
+      updateManualTrackingBulkButtons();
     }
-    selectedManualTracking.clear();
-    await loadManualTracking();
-    await refreshKpis();
-    if (errors.length > 0) await showAlert(`Alguns pedidos falharam ao enviar:\n${errors.join("\n")}`);
   });
 
-  document.getElementById("bulkArchiveManualBtn").addEventListener("click", async () => {
+  document.getElementById("bulkArchiveManualBtn").addEventListener("click", async (event) => {
     const ids = Array.from(selectedManualTracking).filter(
       (id) => manualTrackingOrders.find((o) => o.id === id)?.status === "failed",
     );
     if (ids.length === 0) return;
     if (!(await showConfirm(`Remover ${ids.length} pedido(s) do painel? Use quando ja foram resolvidos inteiramente por fora.`))) return;
-    const errors = [];
-    for (const id of ids) {
-      try {
-        await api(`/${id}/archive`, { method: "POST" });
-      } catch (error) {
-        errors.push(`${id}: ${error.message}`);
+    const btn = event.currentTarget;
+    btn.disabled = true;
+    try {
+      const errors = [];
+      for (const id of ids) {
+        try {
+          await api(`/${id}/archive`, { method: "POST" });
+        } catch (error) {
+          errors.push(`${id}: ${error.message}`);
+        }
       }
+      selectedManualTracking.clear();
+      await loadManualTracking();
+      await refreshKpis();
+      if (errors.length > 0) await showAlert(`Alguns pedidos falharam ao remover:\n${errors.join("\n")}`);
+    } finally {
+      updateManualTrackingBulkButtons();
     }
-    selectedManualTracking.clear();
-    await loadManualTracking();
-    await refreshKpis();
-    if (errors.length > 0) await showAlert(`Alguns pedidos falharam ao remover:\n${errors.join("\n")}`);
   });
 }
 
