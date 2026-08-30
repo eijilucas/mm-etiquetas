@@ -162,10 +162,9 @@ function renderPendingStoreFilter() {
     return;
   }
 
-  const countFor = (storeKey) =>
-    storeKey === "all" ? pendingOrders.length : pendingOrders.filter((order) => order.storeKey === storeKey).length;
+  const countFor = (storeKey) => pendingOrders.filter((order) => order.storeKey === storeKey).length;
 
-  const buttons = [{ key: "all", label: "Todas" }, ...keys.map((key) => ({ key, label: storeLabel(key) }))];
+  const buttons = keys.map((key) => ({ key, label: storeLabel(key) }));
   container.innerHTML = buttons
     .map(
       ({ key, label }) =>
