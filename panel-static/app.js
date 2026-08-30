@@ -19,8 +19,60 @@ function storeLabel(storeKey) {
   return STORE_LABELS[storeKey] || storeKey;
 }
 
+// Only needed where raw text (a Melhor Envio/Shopify error body, which can
+// contain literal quotes and braces) lands inside an HTML attribute — text
+// content elsewhere in this file isn't escaped, matching the rest of the codebase.
+function escapeAttr(value) {
+  return String(value ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+}
+
 function orderRef(order) {
   return `#${order.shopifyOrderNumber ?? order.shopifyOrderId} · ${storeLabel(order.storeKey)}`;
+}
+
+// Translates the raw technical strings the backend surfaces (Melhor Envio
+// API bodies, Shopify GraphQL errors, internal guard messages) into short,
+// plain-language messages that say what to actually do — Vitor/Felipe
+// shouldn't need to know what a userErrors array or a 422 is. Order matters:
+// more specific patterns are checked before their broader fallback. Anything
+// unrecognized falls through to the raw message untouched, so a genuinely
+// new failure is still fully visible, just without a canned translation —
+// the raw text also stays available as a title tooltip wherever this is used.
+function friendlyErrorMessage(raw) {
+  if (!raw) return "";
+  const msg = raw.toLowerCase();
+
+  if (msg.includes("no recipient cpf/cnpj") || msg.includes("customer_document")) {
+    return "Falta o CPF/CNPJ do destinatario — confira o cadastro do cliente no Shopify.";
+  }
+  if (msg.includes("saldo insuficiente")) {
+    return "Saldo da Melhor Envio insuficiente. Adicione credito e clique em Reprocessar.";
+  }
+  if (msg.includes("endereco de destino") || msg.includes("endereço de destino") || msg.includes("64 caracteres")) {
+    return "Endereco do cliente e longo demais pra Melhor Envio (limite de 64 caracteres). Precisa ser encurtado antes de reprocessar.";
+  }
+  if (msg.includes("unfulfillable") && msg.includes("closed")) {
+    return "Esse pedido ja foi marcado como enviado no Shopify por outro caminho (fora do painel) — nao precisa reenviar, use Remover.";
+  }
+  if (msg.includes("ja esta com rastreio sincronizado")) {
+    return "Esse pedido ja teve o rastreio enviado — nada a fazer.";
+  }
+  if (msg.includes("tracking code not yet available")) {
+    return "A Melhor Envio ainda nao liberou o codigo de rastreio (transportadora ainda nao bipou o pacote). O sistema tenta de novo sozinho.";
+  }
+  if (msg.includes("cep") && (msg.includes("nao atendido") || msg.includes("não atendido") || msg.includes("invalido") || msg.includes("inválido"))) {
+    return "CEP do cliente nao e atendido por nenhuma transportadora da Melhor Envio.";
+  }
+  if (msg.includes("sem detalhes na resposta")) {
+    return "A Melhor Envio recusou a compra sem explicar o motivo. Tente Reprocessar; se continuar, avise o time tecnico.";
+  }
+  if (msg.includes("checkout returned an empty response")) {
+    return "A Melhor Envio nao respondeu a compra. Clique em Reprocessar.";
+  }
+  if (msg.includes("missing melhorenvio") || msg.includes("no fulfillment order found") || msg.includes("no shopify store configured") || msg.includes("returned no fulfillment id")) {
+    return "Erro interno inesperado nesse pedido — avise o time tecnico.";
+  }
+  return raw;
 }
 
 // HTML version for table cells — bolds the order number so it's easy to spot
@@ -330,7 +382,7 @@ function renderReleasedRows() {
       <td>${order.shippingPrice != null ? formatCurrency(order.shippingPrice, order.currency) : "-"}</td>
       <td>${order.trackingCode ?? "-"}</td>
       <td>${order.labelPdfUrl ? `<a class="btn" href="${order.labelPdfUrl}" target="_blank" rel="noopener">Etiqueta</a>` : "-"}</td>
-      <td class="error-text">${order.lastError ?? ""}</td>
+      <td class="error-text" title="${escapeAttr(order.lastError)}">${friendlyErrorMessage(order.lastError)}</td>
       <td>${formatDate(order.updatedAt)}</td>
       <td>
         ${canReprocess ? `<button class="btn" data-reprocess="${order.id}">Reprocessar</button>` : ""}
@@ -357,7 +409,7 @@ function renderReleasedRows() {
         await loadProcessing();
         await refreshKpis();
       } catch (error) {
-        await showAlert(`Erro ao reprocessar: ${error.message}`);
+        await showAlert(`Erro ao reprocessar: ${friendlyErrorMessage(error.message)}`);
         btn.disabled = false;
       }
     });
@@ -455,7 +507,7 @@ function renderHeldRows() {
         await loadHeld();
         await refreshKpis();
       } catch (error) {
-        await showAlert(`Erro ao reverter: ${error.message}`);
+        await showAlert(`Erro ao reverter: ${friendlyErrorMessage(error.message)}`);
         btn.disabled = false;
       }
     });
@@ -473,7 +525,7 @@ function renderHeldRows() {
         await loadHeld();
         await refreshKpis();
       } catch (error) {
-        await showAlert(`Erro ao remover: ${error.message}`);
+        await showAlert(`Erro ao remover: ${friendlyErrorMessage(error.message)}`);
         btn.disabled = false;
       }
     });
@@ -636,7 +688,7 @@ function renderManualTrackingRows() {
         await loadManualTracking();
         await refreshKpis();
       } catch (error) {
-        await showAlert(`Erro ao remover: ${error.message}`);
+        await showAlert(`Erro ao remover: ${friendlyErrorMessage(error.message)}`);
         btn.disabled = false;
       }
     });
@@ -657,7 +709,7 @@ function renderManualTrackingRows() {
         await loadManualTracking();
         await refreshKpis();
       } catch (error) {
-        await showAlert(`Erro ao enviar rastreio: ${error.message}`);
+        await showAlert(`Erro ao enviar rastreio: ${friendlyErrorMessage(error.message)}`);
         btn.disabled = false;
       }
     });
@@ -699,7 +751,7 @@ function setupManualTracking() {
         try {
           await api(`/${id}/tracking`, { method: "POST", body: JSON.stringify({ trackingCode }) });
         } catch (error) {
-          errors.push(`${id}: ${error.message}`);
+          errors.push(`${orderRef(order)}: ${friendlyErrorMessage(error.message)}`);
         }
       }
       selectedManualTracking.clear();
@@ -725,7 +777,8 @@ function setupManualTracking() {
         try {
           await api(`/${id}/archive`, { method: "POST" });
         } catch (error) {
-          errors.push(`${id}: ${error.message}`);
+          const order = manualTrackingOrders.find((o) => o.id === id);
+          errors.push(`${order ? orderRef(order) : id}: ${friendlyErrorMessage(error.message)}`);
         }
       }
       selectedManualTracking.clear();
@@ -827,7 +880,7 @@ function setupSyncNow() {
       await api("/reconciliation/run", { method: "POST" });
       await loadAll();
     } catch (error) {
-      await showAlert(`Erro ao sincronizar: ${error.message}`);
+      await showAlert(`Erro ao sincronizar: ${friendlyErrorMessage(error.message)}`);
     } finally {
       btn.disabled = false;
       btn.textContent = originalText;
@@ -858,7 +911,7 @@ function setupHoldDialog() {
       await loadPending();
       await refreshKpis();
     } catch (error) {
-      await showAlert(`Erro ao segurar pedidos: ${error.message}`);
+      await showAlert(`Erro ao segurar pedidos: ${friendlyErrorMessage(error.message)}`);
     }
   });
 }
@@ -880,7 +933,7 @@ function setupCancelLabelDialog() {
       await loadProcessing();
       await refreshKpis();
     } catch (error) {
-      await showAlert(`Erro ao cancelar etiqueta: ${error.message}`);
+      await showAlert(`Erro ao cancelar etiqueta: ${friendlyErrorMessage(error.message)}`);
     }
   });
 }
@@ -1001,7 +1054,7 @@ function setupToolbar() {
       await loadExternal();
       await showAlert(`${recorded} pedido(s) adicionado(s) ao historico. ${skipped} ja estavam registrados ou em andamento no painel.`);
     } catch (error) {
-      await showAlert(`Erro ao buscar historico: ${error.message}`);
+      await showAlert(`Erro ao buscar historico: ${friendlyErrorMessage(error.message)}`);
     } finally {
       btn.disabled = false;
       btn.textContent = originalText;
@@ -1022,7 +1075,7 @@ function setupStockConfirmDialog() {
       await loadPending();
       await refreshKpis();
     } catch (error) {
-      await showAlert(`Erro ao aprovar: ${error.message}`);
+      await showAlert(`Erro ao aprovar: ${friendlyErrorMessage(error.message)}`);
     }
   });
 }
