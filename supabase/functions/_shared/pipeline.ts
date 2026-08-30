@@ -252,13 +252,19 @@ export async function estimateShippingCost(config: AppConfig, order: OrderShippi
   }
 }
 
-// Surfaces the two failure classes that are actually predictable ahead of
+// Melhor Envio rejects to.address over this length with a 422 (confirmed
+// live: "Endereco de destino - 64 caracteres") — checked against the same
+// street-only string toAddress actually sends (post splitAddressAndNumber),
+// not the raw address1, since a trailing house number gets split off first.
+const MELHOR_ENVIO_ADDRESS_MAX_LENGTH = 64;
+
+// Surfaces the failure classes that are actually predictable ahead of
 // approval (unlike a checkout-time 500 or Melhor Envio going down, which
-// can't be front-run): a missing recipient CPF/CNPJ — buildCartPayload's
-// toAddress always throws on this, no fallback exists — and no valid
-// shipping quote, which is a softer signal since createCartStep still
-// falls back to the fixed default service either way, so it doesn't
-// guarantee a failure the way a missing document does.
+// can't be front-run): a missing recipient CPF/CNPJ and an address over
+// Melhor Envio's length limit — buildCartPayload's toAddress always throws
+// on either, no fallback exists — and no valid shipping quote, which is a
+// softer signal since createCartStep still falls back to the fixed default
+// service either way, so it doesn't guarantee a failure the way those do.
 export async function checkApprovalIssues(
   config: AppConfig,
   order: OrderShippingRow,
@@ -270,6 +276,14 @@ export async function checkApprovalIssues(
   if (price == null) warnings.push("Sem cotacao de frete confirmada para o CEP/endereco (pode cair no frete padrao ou falhar)");
 
   const shippingAddress = order.shipping_address as Record<string, unknown>;
+
+  const { address: streetAddress } = splitAddressAndNumber(String(shippingAddress.address1 ?? ""));
+  if (streetAddress.length > MELHOR_ENVIO_ADDRESS_MAX_LENGTH) {
+    blocking.push(
+      `Endereco com ${streetAddress.length} caracteres (limite da Melhor Envio e ${MELHOR_ENVIO_ADDRESS_MAX_LENGTH}) — a compra do frete vai falhar, precisa encurtar o endereco antes`,
+    );
+  }
+
   if (!shippingAddress.document) {
     let hasDocument = false;
     const store = getStoreByKey(config, order.store_key);

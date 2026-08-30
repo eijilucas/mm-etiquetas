@@ -561,6 +561,54 @@ Deno.test("approve-preview flags a missing recipient document as blocking, and a
   assertEquals(noquote?.warnings.length, 1);
 });
 
+// Confirmed live: Melhor Envio rejects to.address over 64 chars with a 422
+// ("Endereco de destino - 64 caracteres"), which buildCartPayload can't
+// recover from — same severity as the missing-document check above.
+Deno.test("approve-preview flags an address over Melhor Envio's 64-char limit as blocking", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push({
+    ...makePreviewOrder("order-longaddr", "8005"),
+    shipping_address: {
+      zip: "65350-000",
+      // Real example that failed live — 68 chars, no trailing house number.
+      address1: "Rua Manijituba segunda travessia , Sn , em frente a maconaria, Sn",
+      city: "Vitoria do Mearim",
+      province_code: "MA",
+      document: "12345678900",
+    },
+  });
+
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("/me/shipment/calculate")) {
+      return new Response(JSON.stringify([{ id: 1, name: "PAC", price: "24.50" }]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url.includes("/me/balance")) {
+      return new Response(JSON.stringify({ balance: 500, reserved: 0, debts: 0 }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    throw new Error(`Unexpected fetch call: ${url}`);
+  }) as typeof fetch;
+
+  let json: { problems: { id: string; blocking: string[] }[] };
+  try {
+    const req = new Request("http://localhost/functions/v1/orders-api/approve-preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+      body: JSON.stringify({ ids: ["order-longaddr"] }),
+    });
+    // deno-lint-ignore no-explicit-any
+    const res = await handleOrdersApi(req, { config, supabase: fake as any });
+    assertEquals(res.status, 200);
+    json = await res.json();
+  } finally {
+    globalThis.fetch = original;
+  }
+
+  const problem = json.problems.find((p) => p.id === "order-longaddr");
+  assertEquals(problem?.blocking.length, 1);
+});
+
 Deno.test("archives a held order so it drops out of every panel tab", async () => {
   const fake = makeFakeSupabase();
   fake.table("orders_shipping").push({
