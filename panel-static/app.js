@@ -175,6 +175,10 @@ function renderPendingStoreFilter() {
   container.querySelectorAll(".store-filter-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       pendingStoreFilter = btn.dataset.store;
+      // Re-render the buttons too, not just the table — otherwise "active"
+      // only catches up on the next background refresh (up to a minute
+      // later), not on the click itself.
+      renderPendingStoreFilter();
       renderPendingRows();
     });
   });
