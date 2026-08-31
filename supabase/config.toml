@@ -31,3 +31,9 @@ verify_jwt = false
 
 [functions.reconciliation-cron]
 verify_jwt = false
+
+# external-order-intake é chamada sistema-a-sistema pelo mental-madness-
+# vendas-externas, autenticada por EXTERNAL_ORDERS_SECRET — mesmo padrão do
+# shopify-webhook.
+[functions.external-order-intake]
+verify_jwt = false

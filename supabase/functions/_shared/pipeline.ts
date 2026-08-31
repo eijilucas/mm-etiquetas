@@ -17,7 +17,7 @@ import {
   cancelLabel,
 } from "./melhorenvio.ts";
 import type { MeCartRequest } from "./melhorenvio.ts";
-import { reportLabelGenerated, reportLabelCancelled } from "./estoque.ts";
+import { reportLabelGenerated, reportLabelCancelled, reportExternalLabelGenerated, reportExternalLabelCancelled } from "./estoque.ts";
 
 function log(fields: Record<string, unknown>, msg: string) {
   console.log(JSON.stringify({ msg, ...fields }));
@@ -285,8 +285,14 @@ async function generateAndPrintLabelStep(supabase: SupabaseClient, config: AppCo
     await generateLabel(config, [order.melhor_envio_order_id]);
     const printed = await printLabel(config, [order.melhor_envio_order_id]);
     log({ orderShippingId: order.id, url: printed.url }, "pipeline_label_generated");
-    // Best-effort, never blocks the pipeline — see estoque.ts.
-    await reportLabelGenerated(config, order.shopify_order_id, order.items);
+    // Best-effort, never blocks the pipeline — see estoque.ts. Pedido
+    // externo (Vendas Externas) casa por catalog_product_id, não por
+    // shopifyLineItemId — precisa da função de baixa dedicada.
+    if (order.store_key === "external") {
+      await reportExternalLabelGenerated(config, order.shopify_order_id, order.items);
+    } else {
+      await reportLabelGenerated(config, order.shopify_order_id, order.items);
+    }
     return updateOrder(supabase, order.id, {
       melhor_envio_label_id: order.melhor_envio_order_id,
       label_pdf_url: printed.url,
@@ -304,7 +310,11 @@ async function generateAndPrintLabelStep(supabase: SupabaseClient, config: AppCo
 }
 
 async function syncTrackingStep(supabase: SupabaseClient, config: AppConfig, order: OrderShippingRow): Promise<OrderShippingRow> {
-  if (order.tracking_code && order.shopify_fulfillment_id) {
+  // Pedido externo (Vendas Externas) não tem pedido Shopify de verdade por
+  // trás — não há Fulfillment pra criar, então basta o código de rastreio
+  // já existir. Ver mais abaixo: o mesmo motivo faz a Fulfillment API da
+  // Shopify inteira ser pulada pra esse tipo de pedido.
+  if (order.tracking_code && (order.shopify_fulfillment_id || order.store_key === "external")) {
     return updateOrder(supabase, order.id, { status: "tracking_synced" });
   }
   if (!order.melhor_envio_order_id) {
@@ -317,6 +327,15 @@ async function syncTrackingStep(supabase: SupabaseClient, config: AppConfig, ord
   const trackingCode = order.tracking_code ?? (await fetchTrackingByOrderId(config, order.melhor_envio_order_id));
   if (!trackingCode) {
     throw new Error("Tracking code not yet available from Melhor Envio for this order");
+  }
+
+  if (order.store_key === "external") {
+    log({ orderShippingId: order.id }, "pipeline_tracking_synced_external_no_fulfillment");
+    return updateOrder(supabase, order.id, {
+      tracking_code: trackingCode,
+      status: "tracking_synced",
+      last_error: null,
+    });
   }
 
   const store = getStoreByKey(config, order.store_key);
@@ -392,6 +411,10 @@ export async function cancelOrderLabel(
   await cancelLabel(config, [order.melhor_envio_order_id], reason);
   // Best-effort — no-ops on the estoque side if stock was never deducted
   // for this order (e.g. cancelled before generateAndPrintLabelStep ran).
-  await reportLabelCancelled(config, order.shopify_order_id, order.items);
+  if (order.store_key === "external") {
+    await reportExternalLabelCancelled(config, order.shopify_order_id, order.items);
+  } else {
+    await reportLabelCancelled(config, order.shopify_order_id, order.items);
+  }
   await updateOrder(supabase, order.id, { status: "held", held_reason: reason, held_at: new Date().toISOString() });
 }
