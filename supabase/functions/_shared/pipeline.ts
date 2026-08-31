@@ -19,7 +19,7 @@ import {
   cancelLabel,
 } from "./melhorenvio.ts";
 import type { MeCartRequest } from "./melhorenvio.ts";
-import { reportLabelGenerated, reportLabelCancelled } from "./estoque.ts";
+import { reportLabelGenerated, reportLabelCancelled, reportExternalLabelGenerated, reportExternalLabelCancelled } from "./estoque.ts";
 
 function log(fields: Record<string, unknown>, msg: string) {
   console.log(JSON.stringify({ msg, ...fields }));
@@ -437,8 +437,14 @@ async function generateAndPrintLabelStep(supabase: SupabaseClient, config: AppCo
     await generateLabel(config, [order.melhor_envio_order_id]);
     const printed = await printLabel(config, [order.melhor_envio_order_id]);
     log({ orderShippingId: order.id, url: printed.url }, "pipeline_label_generated");
-    // Best-effort, never blocks the pipeline — see estoque.ts.
-    await reportLabelGenerated(config, order.shopify_order_id, order.items);
+    // Best-effort, never blocks the pipeline — see estoque.ts. Pedido
+    // externo (Vendas Externas) casa por catalog_product_id, não por
+    // shopifyLineItemId — precisa da função de baixa dedicada.
+    if (order.store_key === "external") {
+      await reportExternalLabelGenerated(config, order.shopify_order_id, order.items);
+    } else {
+      await reportLabelGenerated(config, order.shopify_order_id, order.items);
+    }
     return updateOrder(supabase, order.id, {
       melhor_envio_label_id: order.melhor_envio_order_id,
       label_pdf_url: printed.url,
@@ -551,6 +557,21 @@ export async function manualTrackingSync(
   if (order.status === "tracking_synced") {
     throw new Error("Pedido ja esta com rastreio sincronizado");
   }
+
+  // Pedido externo (Vendas Externas) não tem pedido Shopify de verdade por
+  // trás — não há Fulfillment pra criar (nem faria sentido: getStoreByKey
+  // nunca vai achar um "external" configurado). Marca tracking_synced
+  // direto, sem passar pela Shopify.
+  if (order.store_key === "external") {
+    log({ orderShippingId: order.id }, "pipeline_manual_tracking_synced_external_no_fulfillment");
+    await updateOrder(supabase, order.id, {
+      tracking_code: trackingCode,
+      status: "tracking_synced",
+      last_error: null,
+    });
+    return;
+  }
+
   const store = getStoreByKey(config, order.store_key);
   if (!store) {
     throw new Error(`No Shopify store configured for storeKey "${order.store_key}"`);
@@ -595,6 +616,10 @@ export async function cancelOrderLabel(
   await cancelLabel(config, [order.melhor_envio_order_id], reason);
   // Best-effort — no-ops on the estoque side if stock was never deducted
   // for this order (e.g. cancelled before generateAndPrintLabelStep ran).
-  await reportLabelCancelled(config, order.shopify_order_id, order.items);
+  if (order.store_key === "external") {
+    await reportExternalLabelCancelled(config, order.shopify_order_id, order.items);
+  } else {
+    await reportLabelCancelled(config, order.shopify_order_id, order.items);
+  }
   await updateOrder(supabase, order.id, { status: "held", held_reason: reason, held_at: new Date().toISOString() });
 }

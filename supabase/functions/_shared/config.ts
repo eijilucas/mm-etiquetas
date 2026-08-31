@@ -146,6 +146,13 @@ export function loadConfig() {
       apiUrl: optional("ESTOQUE_API_URL"),
       integrationSecret: optional("ESTOQUE_INTEGRATION_SECRET"),
     },
+
+    // Autentica external-order-intake (chamada pelo mental-madness-vendas-
+    // externas quando cria um pedido) — secret dedicado, não reaproveita
+    // nenhum outro já existente, pra poder rotacionar/revogar independente.
+    externalOrders: {
+      secret: optional("EXTERNAL_ORDERS_SECRET"),
+    },
   };
 }
 
