@@ -369,6 +369,15 @@ export async function fetchTrackingByOrderId(config: AppConfig, orderId: string)
   return entry?.tracking || entry?.melhorenvio_tracking || undefined;
 }
 
+// Service ids that quote fine via /me/shipment/calculate but are rejected by
+// POST /me/cart because they require an `options.agency_id` we never send
+// (this integration has no agency/pickup-point configured for any carrier).
+// Confirmed via GET /me/shipment/services: id 35 ("Standard" / Total Express)
+// has requirements.rules["options.agency_id"] = ["required"], whose failure
+// message is exactly "A agência é obrigatória ao selecionar este serviço" —
+// the error real orders (e.g. #3374) hit when auto-cheapest picked it.
+const SERVICES_REQUIRING_AGENCY = [35];
+
 // Calls /me/shipment/calculate with the same from/to/products/volumes and
 // picks the lowest-priced quote (optionally restricted to an allow-list of
 // service ids). Falls back to the fixed MELHORENVIO_SERVICE_ID if
@@ -399,6 +408,7 @@ export async function pickCheapestServiceId(
       const price = Number(quote.price);
       if (!Number.isFinite(price) || price <= 0) return false;
       if (allowed.length > 0 && !allowed.includes(quote.id)) return false;
+      if (SERVICES_REQUIRING_AGENCY.includes(quote.id)) return false;
       return true;
     });
 
