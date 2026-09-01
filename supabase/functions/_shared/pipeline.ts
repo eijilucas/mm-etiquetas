@@ -20,6 +20,7 @@ import {
 } from "./melhorenvio.ts";
 import type { MeCartRequest } from "./melhorenvio.ts";
 import { reportLabelGenerated, reportLabelCancelled, reportExternalLabelGenerated, reportExternalLabelCancelled } from "./estoque.ts";
+import { sendShippingCallback } from "./integrationCallback.ts";
 
 function log(fields: Record<string, unknown>, msg: string) {
   console.log(JSON.stringify({ msg, ...fields }));
@@ -568,6 +569,17 @@ export async function manualTrackingSync(
       tracking_code: trackingCode,
       status: "tracking_synced",
       last_error: null,
+    });
+    // Avisa o Vendas Externas (que manda o e-mail pro cliente) — não existe
+    // Fulfillment Shopify aqui pra fazer isso sozinho (notifyCustomer:true
+    // só existe no branch abaixo, que não roda pra pedido externo).
+    // order.shopify_order_id carrega o uuid do pedido no Vendas Externas
+    // (ver external-order-intake, que grava externalOrderId nesse campo).
+    await sendShippingCallback(config, {
+      sourceOrderId: order.shopify_order_id,
+      event: "shipping.tracking_synced",
+      status: "tracking_synced",
+      metadata: { trackingCode },
     });
     return;
   }

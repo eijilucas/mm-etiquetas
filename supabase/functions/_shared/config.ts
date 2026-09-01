@@ -153,6 +153,18 @@ export function loadConfig() {
     externalOrders: {
       secret: optional("EXTERNAL_ORDERS_SECRET"),
     },
+
+    // Callback assinado de saída pra mental-madness-vendas-externas
+    // (integration-callback) — avisa quando o rastreio de um pedido
+    // externo é liberado, pra ela mandar o e-mail pro cliente. Secret
+    // dedicado (INTEGRATION_CALLBACK_SECRET), diferente de
+    // EXTERNAL_ORDERS_SECRET (aquele autentica a entrada do pedido; este
+    // autentica a saída do status). Ambos opcionais: sem eles configurados,
+    // o callback é pulado (log + no-op), não quebra o pipeline de etiqueta.
+    integrationCallback: {
+      url: optional("VENDAS_EXTERNAS_FUNCTIONS_URL"),
+      secret: optional("INTEGRATION_CALLBACK_SECRET"),
+    },
   };
 }
 
