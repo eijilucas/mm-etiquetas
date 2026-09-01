@@ -182,10 +182,24 @@ function describeErrorBody(body: MeApiErrorBody | undefined): string {
   if (body.message) parts.push(body.message);
   if (body.errors) {
     for (const [field, messages] of Object.entries(body.errors)) {
-      parts.push(`${field}: ${messages.join(", ")}`);
+      parts.push(`${field}: ${Array.isArray(messages) ? messages.join(", ") : String(messages)}`);
     }
   }
-  return parts.length > 0 ? parts.join(" | ") : "sem detalhes na resposta";
+  if (parts.length > 0) return parts.join(" | ");
+
+  // Neither field above had anything, but the body itself wasn't empty --
+  // dump it raw instead of just "sem detalhes na resposta", in case Melhor
+  // Envio used a different shape this time (a differently-named field, a
+  // top-level string) that would otherwise be silently lost. This is
+  // exactly what's needed to diagnose a failure whose real body we can't
+  // see any other way (last_error is the only record of it — the response
+  // itself is gone once handled).
+  try {
+    const raw = JSON.stringify(body);
+    return raw && raw !== "{}" ? `sem detalhes na resposta (corpo bruto: ${raw})` : "sem detalhes na resposta";
+  } catch {
+    return "sem detalhes na resposta";
+  }
 }
 
 export interface MeBalanceResponse {
