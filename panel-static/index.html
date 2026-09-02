@@ -57,8 +57,8 @@
     <div class="tabs">
       <button class="tab-btn active" data-tab="pending">Fila de aprovacao</button>
       <button class="tab-btn" data-tab="released">Liberados</button>
-      <button class="tab-btn" data-tab="posted">Postados</button>
       <button class="tab-btn" data-tab="manual-tracking">Rastreio</button>
+      <button class="tab-btn" data-tab="posted">Postados</button>
       <button class="tab-btn" data-tab="external">Processados por fora</button>
       <button class="tab-btn" data-tab="held">Em espera (held)</button>
     </div>
@@ -125,32 +125,6 @@
       </div>
     </section>
 
-    <section class="tab-panel" id="tab-posted">
-      <div class="card">
-        <div class="toolbar">
-          <button class="btn" id="refreshPostedBtn">Atualizar</button>
-          <input type="text" class="text-input" id="postedSearch" placeholder="Buscar por numero do pedido ou cliente" style="margin-left: auto;" />
-        </div>
-        <div class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Pedido</th>
-              <th>Loja</th>
-              <th>Cliente</th>
-              <th>Rastreio</th>
-              <th>Etiqueta</th>
-              <th>Postado em</th>
-              <th>Postado por</th>
-            </tr>
-          </thead>
-          <tbody id="postedTableBody"></tbody>
-        </table>
-        </div>
-        <div class="empty-state" id="postedEmpty" style="display:none;">Nenhum pedido postado ainda.</div>
-      </div>
-    </section>
-
     <section class="tab-panel" id="tab-manual-tracking">
       <div class="card">
         <div class="toolbar">
@@ -177,6 +151,32 @@
         </table>
         </div>
         <div class="empty-state" id="manualTrackingEmpty" style="display:none;">Nenhum pedido encontrado.</div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-posted">
+      <div class="card">
+        <div class="toolbar">
+          <button class="btn" id="refreshPostedBtn">Atualizar</button>
+          <input type="text" class="text-input" id="postedSearch" placeholder="Buscar por numero do pedido ou cliente" style="margin-left: auto;" />
+        </div>
+        <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Pedido</th>
+              <th>Loja</th>
+              <th>Cliente</th>
+              <th>Rastreio</th>
+              <th>Etiqueta</th>
+              <th>Postado em</th>
+              <th>Postado por</th>
+            </tr>
+          </thead>
+          <tbody id="postedTableBody"></tbody>
+        </table>
+        </div>
+        <div class="empty-state" id="postedEmpty" style="display:none;">Nenhum pedido postado ainda.</div>
       </div>
     </section>
 
