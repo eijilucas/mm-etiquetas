@@ -7,6 +7,7 @@ import { runShippingPipeline, cancelOrderLabel, manualTrackingSync, checkApprova
 import { runReconciliation, checkStuckOrders, syncPostedOrders, retryStalledTracking } from "../_shared/reconciliation.ts";
 import { fetchAccountBalance, fetchDeclarationPdfUrl, fetchTrackingBatch } from "../_shared/melhorenvio.ts";
 import { fetchPaidFulfilledOrders, mapShopifyOrderToCandidate, latestFulfillmentTracking } from "../_shared/shopify.ts";
+import { reportExternalStageChangeForIds } from "../_shared/integrationCallback.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
 const PROCESSING_STATUSES: ShippingStatus[] = [
@@ -62,6 +63,7 @@ function backgroundRun(promise: Promise<unknown>) {
     promise.catch((err) => console.log(JSON.stringify({ level: "error", err: String(err), msg: "background_pipeline_failed" })));
   }
 }
+
 
 export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Response> {
   if (req.method === "OPTIONS") {
@@ -263,6 +265,7 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
         .in("id", body.ids)
         .eq("status", "pending_approval");
       if (error) throw error;
+      await reportExternalStageChangeForIds(supabase, config, body.ids);
       return json({ ok: true });
     }
 
@@ -280,6 +283,7 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
         .in("id", body.ids)
         .in("status", PROCESSING_STATUSES);
       if (error) throw error;
+      await reportExternalStageChangeForIds(supabase, config, body.ids);
       return json({ ok: true });
     }
 
@@ -318,6 +322,7 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
         .in("id", body.ids)
         .eq("status", "held");
       if (error) throw error;
+      await reportExternalStageChangeForIds(supabase, config, body.ids);
       return json({ ok: true });
     }
 

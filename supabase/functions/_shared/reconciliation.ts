@@ -4,6 +4,7 @@ import { fetchPaidUnfulfilledOrders, mapShopifyOrderToCandidate } from "./shopif
 import { upsertPendingCandidate } from "./db.ts";
 import { sendAlert, runShippingPipeline, TRACKING_NOT_YET_AVAILABLE_ERROR } from "./pipeline.ts";
 import { fetchTrackingBatch } from "./melhorenvio.ts";
+import { reportExternalStageChangeForIds } from "./integrationCallback.ts";
 
 function log(fields: Record<string, unknown>, msg: string) {
   console.log(JSON.stringify({ msg, ...fields }));
@@ -54,6 +55,7 @@ export async function syncPostedOrders(supabase: SupabaseClient, config: AppConf
   const tracking = await fetchTrackingBatch(config, rows.map((row) => row.melhor_envio_order_id));
 
   let posted = 0;
+  const postedIds: string[] = [];
   for (const row of rows) {
     const entry = tracking[row.melhor_envio_order_id];
     if (!entry?.posted_at) continue;
@@ -64,7 +66,13 @@ export async function syncPostedOrders(supabase: SupabaseClient, config: AppConf
       .is("posted_at", null); // don't clobber a manual mark that happened in between
     if (updateError) throw updateError;
     posted += 1;
+    postedIds.push(row.id);
   }
+
+  // Único posted_at set fora do pipeline e das rotas de orders-api (/post)
+  // — avisa o Vendas Externas aqui também, senão a aba Postados de lá nunca
+  // reflete o caso mais comum (Melhor Envio detectando o posted sozinho).
+  await reportExternalStageChangeForIds(supabase, config, postedIds);
 
   log({ checked: rows.length, posted }, "reconciliation_posted_synced");
   return { checked: rows.length, posted };

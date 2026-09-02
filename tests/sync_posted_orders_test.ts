@@ -105,6 +105,56 @@ Deno.test("skips orders with no label yet (nothing to post) even if they otherwi
   assertEquals(result, { checked: 0, posted: 0 });
 });
 
+Deno.test("reports the new posted_at to the Vendas Externas callback for external orders only", async () => {
+  const originalUrl = Deno.env.get("VENDAS_EXTERNAS_FUNCTIONS_URL");
+  const originalSecret = Deno.env.get("INTEGRATION_CALLBACK_SECRET");
+  Deno.env.set("VENDAS_EXTERNAS_FUNCTIONS_URL", "https://vendas-externas.supabase.co");
+  Deno.env.set("INTEGRATION_CALLBACK_SECRET", "test-callback-secret");
+  const configWithCallback = loadConfig();
+
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push(
+    makeLiberadoOrder({ id: "order-external", melhor_envio_order_id: "me-external", store_key: "external", shopify_order_id: "ve-order-1" }),
+    makeLiberadoOrder({ id: "order-shopify", melhor_envio_order_id: "me-shopify", store_key: "loja-principal" }),
+  );
+
+  const callbackCalls: unknown[] = [];
+  try {
+    await withFetchMock(
+      (url, init) => {
+        if (url.includes("/me/shipment/tracking")) {
+          return jsonResponse({
+            "me-external": { id: "me-external", status: "posted", posted_at: "2026-08-19 10:00:00" },
+            "me-shopify": { id: "me-shopify", status: "posted", posted_at: "2026-08-19 10:00:00" },
+          });
+        }
+        if (url.includes("/functions/v1/integration-callback")) {
+          callbackCalls.push(JSON.parse(init.body as string));
+          return jsonResponse({ received: true });
+        }
+        throw new Error(`Unexpected fetch call: ${url}`);
+      },
+      // deno-lint-ignore no-explicit-any
+      async () => {
+        await syncPostedOrders(fake as any, configWithCallback);
+      },
+    );
+  } finally {
+    if (originalUrl === undefined) Deno.env.delete("VENDAS_EXTERNAS_FUNCTIONS_URL");
+    else Deno.env.set("VENDAS_EXTERNAS_FUNCTIONS_URL", originalUrl);
+    if (originalSecret === undefined) Deno.env.delete("INTEGRATION_CALLBACK_SECRET");
+    else Deno.env.set("INTEGRATION_CALLBACK_SECRET", originalSecret);
+  }
+
+  // Only the external order gets reported — the Shopify one has nothing to
+  // do with Vendas Externas at all.
+  assertEquals(callbackCalls.length, 1);
+  assertEquals((callbackCalls[0] as { sourceOrderId: string }).sourceOrderId, "ve-order-1");
+  assertEquals((callbackCalls[0] as { event: string }).event, "shipping.status_changed");
+  assertEquals((callbackCalls[0] as { status: string }).status, "tracking_synced");
+  assertEquals((callbackCalls[0] as { metadata: { postedAt: string } }).metadata.postedAt, "2026-08-19 10:00:00");
+});
+
 Deno.test("batches every unposted order into a single /me/shipment/tracking call", async () => {
   const fake = makeFakeSupabase();
   fake.table("orders_shipping").push(

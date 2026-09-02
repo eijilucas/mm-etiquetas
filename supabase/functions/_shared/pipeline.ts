@@ -20,7 +20,7 @@ import {
 } from "./melhorenvio.ts";
 import type { MeCartRequest } from "./melhorenvio.ts";
 import { reportLabelGenerated, reportLabelCancelled, reportExternalLabelGenerated, reportExternalLabelCancelled } from "./estoque.ts";
-import { sendShippingCallback } from "./integrationCallback.ts";
+import { sendShippingCallback, reportExternalStageChange } from "./integrationCallback.ts";
 
 function log(fields: Record<string, unknown>, msg: string) {
   console.log(JSON.stringify({ msg, ...fields }));
@@ -385,6 +385,20 @@ export async function runShippingPipeline(
     await updateOrder(supabase, orderShippingId, { processing_started_at: null }).catch((err) =>
       log({ orderShippingId, err: String(err), level: "error" }, "pipeline_lock_release_failed"),
     );
+  }
+
+  // Reporta o status final (sucesso ou falha) pro Vendas Externas, se for
+  // pedido externo — no-op pros demais. Único ponto de saída daqui: cobre
+  // approve, reprocess e o cron de reconciliação de uma vez só, já que
+  // todos passam por runShippingPipeline. Busca de novo em vez de usar a
+  // variável `order` porque ela não é reatribuída no branch de falha.
+  // Nunca deixa esse aviso derrubar o pipeline nem quem chama em loop sem
+  // try/catch (retryStalledTracking, syncPostedOrders): erro aqui só loga.
+  try {
+    const finalOrder = await fetchOrder(supabase, orderShippingId);
+    await reportExternalStageChange(config, finalOrder);
+  } catch (err) {
+    log({ orderShippingId, err: String(err), level: "error" }, "pipeline_stage_report_failed");
   }
 }
 
