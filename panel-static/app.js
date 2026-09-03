@@ -202,6 +202,9 @@ function filterBySearch(orders, inputId) {
 const selectedPending = new Set();
 let pendingOrders = [];
 let pendingStoreFilter = "all";
+// Drop groups (Vendas Externas) start expanded — collapsing is opt-in per
+// group, remembered only for this session (not persisted).
+const collapsedDropGroups = new Set();
 
 function renderPendingStoreFilter() {
   const container = document.getElementById("pendingStoreFilter");
@@ -236,6 +239,22 @@ function renderPendingStoreFilter() {
   });
 }
 
+function pendingRowHtml(order) {
+  return `
+    <td><input type="checkbox" data-id="${order.id}" ${selectedPending.has(order.id) ? "checked" : ""} /></td>
+    <td>${orderRefHtml(order)}</td>
+    <td>${storeCell(order)}</td>
+    <td>${order.customerName ?? "-"}<br/><span class="items-list">${order.customerEmail ?? ""}</span></td>
+    <td class="items-list">${itemsSummary(order.items)}</td>
+    <td>${formatCurrency(order.totalPrice, order.currency)}</td>
+    <td>${formatDate(order.paidAt)}</td>
+  `;
+}
+
+// Pedidos do Vendas Externas manualmente agrupados num mesmo drop (ver
+// order_groups la no vendas-externas) aparecem juntos, sob um cabecalho com
+// seta pra recolher/expandir — em vez de espalhados soltos na lista igual
+// os pedidos Shopify normais, que continuam aparecendo linha a linha.
 function renderPendingRows() {
   const tbody = document.getElementById("pendingTableBody");
   const empty = document.getElementById("pendingEmpty");
@@ -259,17 +278,47 @@ function renderPendingRows() {
 
   empty.style.display = visible.length === 0 ? "block" : "none";
 
+  const groups = new Map();
   for (const order of visible) {
+    if (!order.dropId) continue;
+    if (!groups.has(order.dropId)) groups.set(order.dropId, { dropName: order.dropName, orders: [] });
+    groups.get(order.dropId).orders.push(order);
+  }
+
+  const renderedGroups = new Set();
+
+  for (const order of visible) {
+    if (order.dropId) {
+      if (renderedGroups.has(order.dropId)) continue;
+      renderedGroups.add(order.dropId);
+      const group = groups.get(order.dropId);
+      const collapsed = collapsedDropGroups.has(order.dropId);
+
+      const headerTr = document.createElement("tr");
+      headerTr.className = "group-row";
+      headerTr.innerHTML = `
+        <td colspan="7">
+          <button class="group-toggle" data-group-toggle="${order.dropId}">
+            <span class="group-arrow${collapsed ? " collapsed" : ""}">&#9662;</span>
+            ${group.dropName ?? "Drop"} <span class="text-label">(${group.orders.length} pedido${group.orders.length === 1 ? "" : "s"})</span>
+          </button>
+        </td>
+      `;
+      tbody.appendChild(headerTr);
+
+      if (!collapsed) {
+        for (const groupOrder of group.orders) {
+          const tr = document.createElement("tr");
+          tr.className = "grouped-row";
+          tr.innerHTML = pendingRowHtml(groupOrder);
+          tbody.appendChild(tr);
+        }
+      }
+      continue;
+    }
+
     const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td><input type="checkbox" data-id="${order.id}" ${selectedPending.has(order.id) ? "checked" : ""} /></td>
-      <td>${orderRefHtml(order)}</td>
-      <td>${storeCell(order)}</td>
-      <td>${order.customerName ?? "-"}<br/><span class="items-list">${order.customerEmail ?? ""}</span></td>
-      <td class="items-list">${itemsSummary(order.items)}</td>
-      <td>${formatCurrency(order.totalPrice, order.currency)}</td>
-      <td>${formatDate(order.paidAt)}</td>
-    `;
+    tr.innerHTML = pendingRowHtml(order);
     tbody.appendChild(tr);
   }
 
@@ -279,6 +328,15 @@ function renderPendingRows() {
       if (event.target.checked) selectedPending.add(id);
       else selectedPending.delete(id);
       updateBulkButtons();
+    });
+  });
+
+  tbody.querySelectorAll("[data-group-toggle]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const dropId = btn.dataset.groupToggle;
+      if (collapsedDropGroups.has(dropId)) collapsedDropGroups.delete(dropId);
+      else collapsedDropGroups.add(dropId);
+      renderPendingRows();
     });
   });
 }

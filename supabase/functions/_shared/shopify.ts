@@ -112,6 +112,10 @@ export interface OrderCandidate {
   paidAt: Date | null;
   items: OrderItemSnapshot[];
   shippingAddress: Record<string, unknown> | null;
+  // Only ever set for store_key "external" orders — the drop (order_groups
+  // row) they were manually grouped under in Vendas Externas, if any.
+  dropId?: string | null;
+  dropName?: string | null;
 }
 
 function noteAttribute(order: ShopifyOrder, name: string): string | undefined {

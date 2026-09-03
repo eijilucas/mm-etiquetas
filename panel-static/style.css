@@ -309,6 +309,40 @@ tbody tr:hover {
   background: rgba(255, 255, 255, 0.02);
 }
 
+.group-row td {
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border-frame);
+}
+
+.group-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-family: var(--body);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.group-arrow {
+  display: inline-block;
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+
+.group-arrow.collapsed {
+  transform: rotate(-90deg);
+}
+
+.grouped-row td:nth-child(2) {
+  padding-left: 28px;
+}
+
 .pill {
   display: inline-block;
   padding: 4px 12px;

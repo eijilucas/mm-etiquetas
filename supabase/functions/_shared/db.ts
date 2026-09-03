@@ -30,6 +30,8 @@ export interface OrderShippingRow {
   paid_at: string | null;
   items: unknown;
   shipping_address: Record<string, unknown>;
+  drop_id: string | null;
+  drop_name: string | null;
   status: ShippingStatus;
   last_error: string | null;
   approved_by: string | null;
@@ -79,6 +81,8 @@ export interface OrderShippingApiShape {
   paidAt: string | null;
   items: unknown;
   shippingAddress: Record<string, unknown>;
+  dropId: string | null;
+  dropName: string | null;
   status: ShippingStatus;
   lastError: string | null;
   approvedBy: string | null;
@@ -118,6 +122,8 @@ export function toApiShape(row: OrderShippingRow): OrderShippingApiShape {
     paidAt: row.paid_at,
     items: row.items,
     shippingAddress: row.shipping_address,
+    dropId: row.drop_id,
+    dropName: row.drop_name,
     status: row.status,
     lastError: row.last_error,
     approvedBy: row.approved_by,
@@ -193,6 +199,8 @@ export async function upsertPendingCandidate(
     paid_at: candidate.paidAt ? candidate.paidAt.toISOString() : null,
     items: candidate.items,
     shipping_address: candidate.shippingAddress ?? {},
+    drop_id: candidate.dropId ?? null,
+    drop_name: candidate.dropName ?? null,
   };
 
   if (existing) {

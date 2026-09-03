@@ -96,6 +96,28 @@ Deno.test("does not duplicate the row when the same external order is sent twice
   assertEquals(fake.table("orders_shipping").length, 1);
 });
 
+Deno.test("stores the drop (order_groups) id/name when the order was grouped in Vendas Externas", async () => {
+  const fake = makeFakeSupabase();
+  const res = await handleExternalOrderIntake(
+    req(makeBody({ dropId: "bbbbbbbb-0000-0000-0000-000000000002", dropName: "Hell Hounds" })),
+    { config: loadConfig(), supabase: client(fake) },
+  );
+  assertEquals(res.status, 200);
+
+  const rows = fake.table("orders_shipping");
+  assertEquals(rows[0].drop_id, "bbbbbbbb-0000-0000-0000-000000000002");
+  assertEquals(rows[0].drop_name, "Hell Hounds");
+});
+
+Deno.test("leaves drop_id/drop_name null when the order isn't in a drop", async () => {
+  const fake = makeFakeSupabase();
+  await handleExternalOrderIntake(req(makeBody()), { config: loadConfig(), supabase: client(fake) });
+
+  const rows = fake.table("orders_shipping");
+  assertEquals(rows[0].drop_id, null);
+  assertEquals(rows[0].drop_name, null);
+});
+
 Deno.test("held external order is never resurrected back into pending_approval", async () => {
   const fake = makeFakeSupabase();
   await handleExternalOrderIntake(req(makeBody()), { config: loadConfig(), supabase: client(fake) });

@@ -52,6 +52,8 @@ interface ExternalOrderInput {
     cep: string;
   };
   items: ExternalItemInput[];
+  dropId?: string | null;
+  dropName?: string | null;
 }
 
 function isAuthorized(req: Request, config: AppConfig): boolean {
@@ -131,6 +133,8 @@ export async function handleExternalOrderIntake(req: Request, deps: Deps = {}): 
       phone: body.customerPhone ?? null,
       document: body.customerDocument,
     },
+    dropId: body.dropId ?? null,
+    dropName: body.dropName ?? null,
   };
 
   const supabase = deps.supabase ?? createServiceClient(config);
