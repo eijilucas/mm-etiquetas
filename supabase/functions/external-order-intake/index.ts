@@ -16,8 +16,24 @@
 import { loadConfig } from "../_shared/config.ts";
 import type { AppConfig } from "../_shared/config.ts";
 import { createServiceClient, upsertPendingCandidate } from "../_shared/db.ts";
+import type { ShippingStatus } from "../_shared/db.ts";
 import type { OrderCandidate, OrderItemSnapshot } from "../_shared/shopify.ts";
+import { cancelOrderLabel } from "../_shared/pipeline.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
+
+// Mesma lista de orders-api/index.ts (PROCESSING_STATUSES) — duplicada aqui
+// em vez de importada porque aquele arquivo não exporta o array; são as
+// únicas duas edge functions que precisam dela e diverge raramente o
+// suficiente pra não valer o refactor agora.
+const PROCESSING_STATUSES: ShippingStatus[] = [
+  "approved",
+  "cart_created",
+  "purchased",
+  "label_generated",
+  "tracking_ready",
+  "tracking_synced",
+  "failed",
+];
 
 export interface Deps {
   config?: AppConfig;
@@ -69,16 +85,68 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-export async function handleExternalOrderIntake(req: Request, deps: Deps = {}): Promise<Response> {
-  if (req.method !== "POST") {
-    return jsonResponse({ error: "method_not_allowed" }, 405);
+// Espelha a exclusão de um pedido no Vendas Externas — chamado por
+// delete-order de lá sempre que um pedido é apagado do painel (contrato:
+// docs/api-contracts/06-external-order-delete.md). Idempotente: pedido já
+// arquivado, ou nunca encontrado aqui (ex.: falhou na criação e nunca
+// chegou a entrar na fila), respondem ok sem erro — apagar do lado de lá
+// não pode travar em cima de um estado que já não existe deste lado.
+async function handleCancel(req: Request, config: AppConfig, deps: Deps): Promise<Response> {
+  let body: { externalOrderId?: string; reason?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return jsonResponse({ error: "invalid_json" }, 400);
+  }
+  if (!body.externalOrderId) {
+    return jsonResponse({ error: "external_order_id_required" }, 400);
   }
 
-  const config = deps.config ?? loadConfig();
-  if (!isAuthorized(req, config)) {
-    return jsonResponse({ error: "unauthorized" }, 401);
+  const supabase = deps.supabase ?? createServiceClient(config);
+  const reason = body.reason || "Pedido excluído no Vendas Externas";
+
+  const { data: row, error: findError } = await supabase
+    .from("orders_shipping")
+    .select("id, status")
+    .eq("store_key", "external")
+    .eq("shopify_order_id", body.externalOrderId)
+    .maybeSingle();
+
+  if (findError) {
+    console.log(JSON.stringify({ level: "error", err: String(findError), externalOrderId: body.externalOrderId, msg: "external_order_cancel_lookup_failed" }));
+    return jsonResponse({ error: "lookup_failed" }, 500);
+  }
+  if (!row) {
+    return jsonResponse({ ok: true, found: false });
+  }
+  if (row.status === "archived") {
+    return jsonResponse({ ok: true, found: true, finalStatus: "archived", already: true });
   }
 
+  try {
+    // Ainda não saiu de pending_approval/held: nada foi comprado na Melhor
+    // Envio, nem baixa de estoque foi reportada — só arquiva direto, sem
+    // passar pelas travas de status do /cancel e /archive do painel
+    // humano (que existem pra impedir clique errado de operador, não se
+    // aplicam a essa sincronização automática).
+    if (PROCESSING_STATUSES.includes(row.status)) {
+      await cancelOrderLabel(supabase, config, row.id, reason);
+    }
+    const { error: archiveError } = await supabase
+      .from("orders_shipping")
+      .update({ status: "archived", archived_at: new Date().toISOString(), archived_by: "vendas-externas-sync" })
+      .eq("id", row.id);
+    if (archiveError) throw archiveError;
+    return jsonResponse({ ok: true, found: true, finalStatus: "archived" });
+  } catch (error) {
+    console.log(
+      JSON.stringify({ level: "error", err: String(error), externalOrderId: body.externalOrderId, msg: "external_order_cancel_failed" }),
+    );
+    return jsonResponse({ error: "processing_failed" }, 500);
+  }
+}
+
+async function handleCreate(req: Request, config: AppConfig, deps: Deps): Promise<Response> {
   let body: ExternalOrderInput;
   try {
     body = await req.json();
@@ -148,6 +216,19 @@ export async function handleExternalOrderIntake(req: Request, deps: Deps = {}): 
     );
     return jsonResponse({ error: "processing_failed" }, 500);
   }
+}
+
+export async function handleExternalOrderIntake(req: Request, deps: Deps = {}): Promise<Response> {
+  if (req.method !== "POST" && req.method !== "DELETE") {
+    return jsonResponse({ error: "method_not_allowed" }, 405);
+  }
+
+  const config = deps.config ?? loadConfig();
+  if (!isAuthorized(req, config)) {
+    return jsonResponse({ error: "unauthorized" }, 401);
+  }
+
+  return req.method === "DELETE" ? handleCancel(req, config, deps) : handleCreate(req, config, deps);
 }
 
 if (import.meta.main) {
