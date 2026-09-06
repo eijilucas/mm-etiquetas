@@ -142,7 +142,27 @@ export async function mapShopifyOrderToCandidate(order: ShopifyOrder, store: Sto
     : null;
 
   const shopifyGraphqlId = order.admin_graphql_api_id ?? `gid://shopify/Order/${order.id}`;
-  const current = await fetchCurrentOrderState(store, shopifyGraphqlId);
+  // Best-effort: this is only needed to catch post-purchase Order Edits
+  // (swapped/removed line items, adjusted total). If the GraphQL call fails
+  // — a transient Shopify error, a permissions gap, an unexpected body —
+  // fall back to the REST snapshot instead of letting the whole order fail
+  // to map, which previously made the order vanish from the queue entirely
+  // (and, in reconciliation's per-store loop, took every order after it in
+  // the same run down with it).
+  let current: { quantities: Map<number, number>; totalPrice: string | undefined };
+  try {
+    current = await fetchCurrentOrderState(store, shopifyGraphqlId);
+  } catch (error) {
+    console.log(
+      JSON.stringify({
+        level: "warn",
+        shopifyOrderId: order.id,
+        err: String(error),
+        msg: "current_order_state_fetch_failed_falling_back_to_rest",
+      }),
+    );
+    current = { quantities: new Map(), totalPrice: undefined };
+  }
 
   // REST's line_items[].quantity is the ORIGINALLY ordered quantity — it
   // stays put even after Shopify's own Order Edit feature removes/swaps an
@@ -322,13 +342,27 @@ export async function fetchPaidUnfulfilledOrders(
     search.set("updated_at_min", params.updatedAtMin);
   }
 
-  return withRetry(
-    async () => {
-      const data = await shopifyFetch<ShopifyOrdersListResponse>(store, `/orders.json?${search.toString()}`);
-      return data.orders;
-    },
-    { label: "shopify.fetchPaidUnfulfilledOrders", isRetryable: isRetryableStatus },
-  );
+  // Paginate via the Link-header cursor — a single 250-order page silently
+  // dropped every paid+unfulfilled order past the first 250 (held orders
+  // stay paid+unfulfilled in Shopify forever and eat into that budget), so
+  // a newer order could simply never be scanned and never enter the queue.
+  const orders: ShopifyOrder[] = [];
+  let path: string | null = `/orders.json?${search.toString()}`;
+  let pagesFetched = 0;
+  const maxPages = 40; // ~10k orders, just to bound a runaway loop
+
+  while (path && pagesFetched < maxPages) {
+    const currentPath: string = path;
+    const { body, linkHeader } = await withRetry(
+      () => shopifyFetchRaw(store, currentPath),
+      { label: "shopify.fetchPaidUnfulfilledOrders", isRetryable: isRetryableStatus },
+    );
+    orders.push(...(body as ShopifyOrdersListResponse).orders);
+    path = parseNextLink(linkHeader);
+    pagesFetched += 1;
+  }
+
+  return orders;
 }
 
 // One-off backfill for orders fulfilled outside this system before the

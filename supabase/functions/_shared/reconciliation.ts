@@ -23,14 +23,27 @@ export async function runReconciliation(
   for (const store of config.shopify.stores) {
     const orders = await fetchPaidUnfulfilledOrders(store);
     let storeUpserted = 0;
+    let storeFailed = 0;
     for (const order of orders) {
-      const candidate = await mapShopifyOrderToCandidate(order, store);
-      await upsertPendingCandidate(supabase, candidate, store.key);
-      storeUpserted += 1;
+      // Per-order guard: a single order that can't be mapped (bad/edited
+      // data, a transient Shopify error mid-run) must not abort the rest of
+      // the store's batch — that used to silently strip every order after it
+      // from the queue until the offending one was handled by hand.
+      try {
+        const candidate = await mapShopifyOrderToCandidate(order, store);
+        await upsertPendingCandidate(supabase, candidate, store.key);
+        storeUpserted += 1;
+      } catch (error) {
+        storeFailed += 1;
+        log(
+          { storeKey: store.key, shopifyOrderId: order.id, shopifyOrderNumber: order.order_number, err: String(error), level: "error" },
+          "reconciliation_order_failed",
+        );
+      }
     }
     scanned += orders.length;
     upserted += storeUpserted;
-    log({ storeKey: store.key, scanned: orders.length, upserted: storeUpserted }, "reconciliation_store_done");
+    log({ storeKey: store.key, scanned: orders.length, upserted: storeUpserted, failed: storeFailed }, "reconciliation_store_done");
   }
   log({ scanned, upserted }, "reconciliation_done");
   return { scanned, upserted };
