@@ -390,6 +390,27 @@ tbody tr:hover {
   font-size: 12px;
 }
 
+/* "Rastreio" send button/input, tucked under the tracking code in the
+   Liberados table so it doesn't need a column of its own. */
+.released-tracking-send {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.released-tracking-send .btn {
+  padding: 6px 12px;
+  font-size: 11px;
+}
+
+.released-tracking-send .text-input {
+  padding: 6px 10px;
+  font-size: 12px;
+  max-width: 150px;
+}
+
 dialog {
   background: var(--bg-card);
   color: var(--text-primary);

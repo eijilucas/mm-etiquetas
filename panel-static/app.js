@@ -441,7 +441,7 @@ function resolveReleasedTrackingCode(order) {
 }
 
 function releasedTrackingSendHtml(order) {
-  if (!canSendReleasedTracking(order)) return "-";
+  if (!canSendReleasedTracking(order)) return "";
   const ready = order.status === "tracking_ready";
   const auto = !ready && !!order.melhorEnvioOrderId;
   if (ready || auto) {
@@ -450,7 +450,7 @@ function releasedTrackingSendHtml(order) {
   }
   // failed, never purchased through this system — needs a code typed in
   return `
-    <input type="text" class="text-input" data-released-tracking-input="${order.id}" placeholder="Codigo (comprado por fora)" style="max-width: 180px;" />
+    <input type="text" class="text-input" data-released-tracking-input="${order.id}" placeholder="Codigo (por fora)" />
     <button class="btn" data-send-released-tracking="${order.id}">Rastreio</button>
   `;
 }
@@ -483,9 +483,11 @@ function renderReleasedRows() {
       <td>${order.customerName ?? "-"}</td>
       <td>${pill(order.status)}</td>
       <td>${order.shippingPrice != null ? formatCurrency(order.shippingPrice, order.currency) : "-"}</td>
-      <td>${order.trackingCode ?? "-"}</td>
+      <td>
+        ${order.trackingCode ?? "-"}
+        ${canSendReleasedTracking(order) ? `<div class="released-tracking-send">${releasedTrackingSendHtml(order)}</div>` : ""}
+      </td>
       <td>${order.labelPdfUrl ? `<a class="btn" href="${order.labelPdfUrl}" target="_blank" rel="noopener">Etiqueta</a>` : "-"}</td>
-      <td>${releasedTrackingSendHtml(order)}</td>
       <td class="error-text" title="${escapeAttr(order.lastError)}">${friendlyErrorMessage(order.lastError)}</td>
       <td>${formatDate(order.updatedAt)}</td>
       <td>
