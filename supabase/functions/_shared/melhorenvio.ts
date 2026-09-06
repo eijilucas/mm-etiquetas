@@ -333,8 +333,15 @@ export async function cancelLabel(config: AppConfig, orderIds: string[], reason?
 export interface MeTrackingEntry {
   id: string;
   status?: string;
+  // ME's own order protocol ("ORD-<sequential number>") — assigned when the
+  // shipment is created on Melhor Envio, so it increases in the same order
+  // ME's own "Pedidos" list is sorted (created_at desc == protocol desc).
+  protocol?: string;
   tracking?: string;
   melhorenvio_tracking?: string;
+  // When the shipment was created on Melhor Envio (cart -> purchase). This is
+  // the field ME's panel list is ordered by (descending).
+  created_at?: string;
   // Set by Melhor Envio once the carrier scans the package in — this is the
   // source of truth for "posted", no manual confirmation needed.
   posted_at?: string | null;

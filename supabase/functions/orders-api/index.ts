@@ -287,13 +287,14 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
       return json({ ok: true });
     }
 
-    // Read-only preview for the Rastreio manual tab: batch-fetches whatever
-    // tracking code Melhor Envio already has for each order (same fallback
-    // as syncTrackingStep — see melhorenvio.ts) so the packer can just hit
-    // Enviar instead of typing the code in by hand.
+    // Read-only preview: batch-fetches from Melhor Envio, per order id, both
+    // (a) whatever tracking code ME already has (Rastreio tab / Liberados
+    // send button — same fallback as syncTrackingStep) and (b) ME's own
+    // order protocol + created_at, which is what the Liberados tab sorts by
+    // so its row order matches Melhor Envio's own "Pedidos" list exactly.
     if (req.method === "POST" && segments[0] === "tracking-preview") {
       const body = (await req.json().catch(() => ({}))) as { ids?: string[] };
-      if (!Array.isArray(body.ids) || body.ids.length === 0) return json({ previews: {} });
+      if (!Array.isArray(body.ids) || body.ids.length === 0) return json({ previews: {}, meta: {} });
       const { data: orders, error } = await supabase
         .from("orders_shipping")
         .select("id, melhor_envio_order_id")
@@ -303,11 +304,13 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
       const rows = (orders ?? []) as { id: string; melhor_envio_order_id: string }[];
       const tracking = await fetchTrackingBatch(config, rows.map((row) => row.melhor_envio_order_id));
       const previews: Record<string, string | null> = {};
+      const meta: Record<string, { protocol: string | null; createdAt: string | null }> = {};
       for (const row of rows) {
         const entry = tracking[row.melhor_envio_order_id];
         previews[row.id] = entry?.tracking || entry?.melhorenvio_tracking || null;
+        meta[row.id] = { protocol: entry?.protocol ?? null, createdAt: entry?.created_at ?? null };
       }
-      return json({ previews });
+      return json({ previews, meta });
     }
 
     // Explicit manual reversal is the only way a held order re-enters pending_approval.

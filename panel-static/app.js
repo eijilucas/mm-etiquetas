@@ -410,12 +410,15 @@ let processingOrders = [];
 const selectedProcessing = new Set();
 let cancelTargetId = null;
 
-// Live tracking-code lookups for "failed" Liberados rows that were actually
-// purchased (melhorEnvioOrderId set) but Melhor Envio hasn't assigned a code
-// yet — same /tracking-preview call the Rastreio tab uses, kept in its own
-// object so the two tabs don't stomp each other's state. Refreshed by
-// loadProcessing.
+// Per-order data pulled live from Melhor Envio for the Liberados tab,
+// refreshed by loadProcessing (one batched /tracking-preview call):
+//  - releasedTrackingPreviews[id]: the tracking code ME already has, for the
+//    "failed" rows whose Rastreio button sends it.
+//  - releasedMeMeta[id]: { protocol, createdAt } — ME's own order protocol,
+//    used to sort the table in the exact same order as ME's "Pedidos" list
+//    (ME sorts by created_at desc, which is protocol desc).
 let releasedTrackingPreviews = {};
+let releasedMeMeta = {};
 
 function updateReleasedBulkButtons() {
   document.getElementById("bulkPrintBtn").disabled = selectedProcessing.size === 0;
@@ -462,14 +465,23 @@ function releasedTrackingSendHtml(order) {
 function renderReleasedRows() {
   const tbody = document.getElementById("releasedTableBody");
   const empty = document.getElementById("releasedEmpty");
-  // Newest freight purchase on top, to line up with the Melhor Envio
-  // "liberados" list. approved_at is the closest stable proxy for the
-  // purchase date (a reprocess doesn't move it, unlike updated_at); rows
-  // without one — e.g. legacy rows — fall back to updated_at.
+  // Same row order as Melhor Envio's own "Pedidos" list: ME sorts by when
+  // the shipment was created on ME (created_at desc == protocol desc). We
+  // sort by the ME protocol pulled in loadProcessing. Rows not on ME yet
+  // (approved / cart_created, or a failure before the cart step) have no
+  // protocol — they're the most recent activity, so they sit on top, ordered
+  // among themselves by approval time.
+  const meProtocol = (order) => releasedMeMeta[order.id]?.protocol || null;
   const orders = filterBySearch(
     processingOrders.filter((order) => !order.postedAt),
     "releasedSearch",
-  ).sort((a, b) => new Date(b.approvedAt ?? b.updatedAt).getTime() - new Date(a.approvedAt ?? a.updatedAt).getTime());
+  ).sort((a, b) => {
+    const pa = meProtocol(a);
+    const pb = meProtocol(b);
+    if (pa && pb) return pb.localeCompare(pa);
+    if (!pa && !pb) return new Date(b.approvedAt ?? b.updatedAt).getTime() - new Date(a.approvedAt ?? a.updatedAt).getTime();
+    return pa ? 1 : -1;
+  });
   tbody.innerHTML = "";
   empty.style.display = orders.length === 0 ? "block" : "none";
 
@@ -599,19 +611,20 @@ async function loadProcessing() {
   }
   updateReleasedBulkButtons();
 
-  // Live tracking lookup for Liberados rows that were purchased but failed
-  // waiting on a code — so the "Rastreio" button there can send it without
-  // a manual round-trip. Only the still-unposted "failed" ones; tracking_ready
-  // rows already carry their code in order.trackingCode.
+  // One batched Melhor Envio lookup for every unposted Liberados row that
+  // has an ME order: gives us the tracking code (for the failed rows' send
+  // button) and the ME protocol/created_at (to sort the table like ME does).
   releasedTrackingPreviews = {};
-  const releasedAutoFetch = orders.filter((order) => !order.postedAt && order.status === "failed" && order.melhorEnvioOrderId);
-  if (releasedAutoFetch.length > 0) {
+  releasedMeMeta = {};
+  const releasedWithMeOrder = orders.filter((order) => !order.postedAt && order.melhorEnvioOrderId);
+  if (releasedWithMeOrder.length > 0) {
     try {
-      const { previews } = await api("/tracking-preview", {
+      const { previews, meta } = await api("/tracking-preview", {
         method: "POST",
-        body: JSON.stringify({ ids: releasedAutoFetch.map((order) => order.id) }),
+        body: JSON.stringify({ ids: releasedWithMeOrder.map((order) => order.id) }),
       });
-      releasedTrackingPreviews = previews;
+      releasedTrackingPreviews = previews ?? {};
+      releasedMeMeta = meta ?? {};
     } catch (error) {
       console.error("tracking-preview (liberados) failed:", error);
     }
