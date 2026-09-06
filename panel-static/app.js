@@ -484,11 +484,11 @@ function renderReleasedRows() {
       <td>${pill(order.status)}</td>
       <td>${order.shippingPrice != null ? formatCurrency(order.shippingPrice, order.currency) : "-"}</td>
       <td class="nowrap">${order.trackingCode ?? "-"}</td>
-      <td>${order.labelPdfUrl ? `<a class="btn" href="${order.labelPdfUrl}" target="_blank" rel="noopener">Etiqueta</a>` : "-"}</td>
-      <td class="cell-send-tracking">${releasedTrackingSendHtml(order)}</td>
+      <td class="col-action">${order.labelPdfUrl ? `<a class="btn" href="${order.labelPdfUrl}" target="_blank" rel="noopener">Etiqueta</a>` : "-"}</td>
+      <td class="col-action cell-send-tracking">${releasedTrackingSendHtml(order)}</td>
       <td class="error-text" title="${escapeAttr(order.lastError)}">${friendlyErrorMessage(order.lastError)}</td>
       <td class="nowrap">${formatDate(order.updatedAt)}</td>
-      <td>
+      <td class="col-action">
         ${canReprocess ? `<button class="btn" data-reprocess="${order.id}">Reprocessar</button>` : ""}
         <button class="btn danger" data-cancel="${order.id}">Cancelar</button>
       </td>

@@ -390,21 +390,25 @@ tbody tr:hover {
   font-size: 12px;
 }
 
-/* Liberados "Enviar rastreio" column — compact so it earns its width. */
-.cell-send-tracking {
+/* Action columns (Etiqueta / Enviar rastreio / Reprocessar+Cancelar): all
+   buttons the same size (plain .btn) and vertically centered so they line
+   up across the row regardless of how tall the error cell gets. */
+.col-action {
+  vertical-align: middle;
   white-space: nowrap;
 }
 
-.cell-send-tracking .btn {
-  padding: 6px 12px;
-  font-size: 11px;
+.col-action .btn {
+  display: inline-block;
+  vertical-align: middle;
+  min-width: 104px;
+  text-align: center;
 }
 
 .cell-send-tracking .text-input {
-  padding: 6px 10px;
-  font-size: 12px;
-  max-width: 130px;
-  margin-right: 6px;
+  display: block;
+  max-width: 160px;
+  margin-bottom: 6px;
 }
 
 /* Keep one-value cells on a single line so columns stay aligned instead of
