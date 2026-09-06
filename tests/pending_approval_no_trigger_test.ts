@@ -655,7 +655,30 @@ Deno.test("archives a failed order resolved entirely by hand outside the system"
   assertEquals(fake.table("orders_shipping")[0].status, "archived");
 });
 
-Deno.test("refuses to archive an order that isn't held or failed", async () => {
+Deno.test("archives a tracking_ready order that shouldn't be sent / was handled by hand", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push({
+    id: "order-ready",
+    store_key: "test",
+    shopify_order_id: "7004",
+    status: "tracking_ready",
+    tracking_code: "ME262D522P9BR",
+    melhor_envio_order_id: "me-ready",
+  });
+
+  const req = new Request("http://localhost/functions/v1/orders-api/order-ready/archive", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+  });
+
+  // deno-lint-ignore no-explicit-any
+  const res = await handleOrdersApi(req, { config, supabase: fake as any });
+
+  assertEquals(res.status, 200);
+  assertEquals(fake.table("orders_shipping")[0].status, "archived");
+});
+
+Deno.test("refuses to archive an order that isn't held, failed or tracking_ready", async () => {
   const fake = makeFakeSupabase();
   fake.table("orders_shipping").push({
     id: "order-pending",

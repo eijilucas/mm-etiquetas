@@ -828,7 +828,7 @@ function renderManualTrackingRows() {
       <td>${codeCell}</td>
       <td>
         <button class="btn" data-send-tracking="${order.id}" ${auto && !preview ? "disabled" : ""}>Enviar</button>
-        ${order.status === "failed" ? `<button class="btn danger" data-archive-manual="${order.id}">Remover</button>` : ""}
+        <button class="btn danger" data-archive-manual="${order.id}">Remover</button>
       </td>
     `;
     tbody.appendChild(tr);
@@ -843,14 +843,16 @@ function renderManualTrackingRows() {
     });
   });
 
-  // Covers orders that got resolved entirely by hand outside this system —
-  // label bought AND tracking already sent to Shopify directly — so there's
-  // nothing left to send here, just needs to drop out of the queue. Only
-  // offered for "failed" (the /archive route doesn't allow other statuses).
+  // Covers orders resolved entirely by hand outside this system (label
+  // bought AND tracking already given to the customer directly), or a
+  // "Aguardando envio" that just shouldn't go out — nothing here progresses
+  // on its own, so it only needs to drop out of the queue. The /archive
+  // route accepts failed, held and tracking_ready — every status this tab
+  // shows.
   tbody.querySelectorAll("[data-archive-manual]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.archiveManual;
-      if (!(await showConfirm("Remover esse pedido do painel? Use quando ele ja foi resolvido inteiramente por fora (etiqueta e rastreio ja enviados na mao)."))) return;
+      if (!(await showConfirm("Remover esse pedido do painel? Ele para de aparecer em qualquer aba (o historico continua salvo no banco). Use quando ja foi resolvido por fora, ou nao deve ser enviado."))) return;
       btn.disabled = true;
       try {
         await api(`/${id}/archive`, { method: "POST" });
@@ -933,11 +935,13 @@ function setupManualTracking() {
   });
 
   document.getElementById("bulkArchiveManualBtn").addEventListener("click", async (event) => {
-    const ids = Array.from(selectedManualTracking).filter(
-      (id) => manualTrackingOrders.find((o) => o.id === id)?.status === "failed",
-    );
+    // Every status this tab shows (failed / tracking_ready) is archivable.
+    const ids = Array.from(selectedManualTracking).filter((id) => {
+      const status = manualTrackingOrders.find((o) => o.id === id)?.status;
+      return status === "failed" || status === "tracking_ready";
+    });
     if (ids.length === 0) return;
-    if (!(await showConfirm(`Remover ${ids.length} pedido(s) do painel? Use quando ja foram resolvidos inteiramente por fora.`))) return;
+    if (!(await showConfirm(`Remover ${ids.length} pedido(s) do painel? O historico continua salvo. Use quando ja foram resolvidos por fora, ou nao devem ser enviados.`))) return;
     const btn = event.currentTarget;
     btn.disabled = true;
     try {
