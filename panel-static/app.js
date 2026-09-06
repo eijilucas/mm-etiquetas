@@ -488,6 +488,8 @@ function renderReleasedRows() {
   for (const order of orders) {
     const tr = document.createElement("tr");
     const canReprocess = order.status === "failed";
+    // Same statuses the /archive route accepts (held never shows here).
+    const canArchive = order.status === "failed" || order.status === "tracking_ready";
     tr.innerHTML = `
       <td>${isPrintable(order) ? `<input type="checkbox" data-select="${order.id}" ${selectedProcessing.has(order.id) ? "checked" : ""} />` : ""}</td>
       <td>${orderRefHtml(order)}</td>
@@ -503,6 +505,7 @@ function renderReleasedRows() {
       <td class="col-action">
         ${canReprocess ? `<button class="btn" data-reprocess="${order.id}">Reprocessar</button>` : ""}
         <button class="btn danger" data-cancel="${order.id}">Cancelar</button>
+        ${canArchive ? `<button class="btn danger" data-archive-released="${order.id}">Remover</button>` : ""}
       </td>
     `;
     tbody.appendChild(tr);
@@ -536,6 +539,24 @@ function renderReleasedRows() {
       cancelTargetId = btn.dataset.cancel;
       document.getElementById("cancelLabelReasonInput").value = "";
       document.getElementById("cancelLabelDialog").showModal();
+    });
+  });
+
+  // "Remover" só tira do painel (histórico fica no banco) — não cancela a
+  // etiqueta nem estorna. Pra estornar, é o "Cancelar" ao lado.
+  tbody.querySelectorAll("[data-archive-released]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.archiveReleased;
+      if (!(await showConfirm("Remover esse pedido do painel? Ele para de aparecer em qualquer aba (o historico continua salvo no banco). Nao cancela a etiqueta na Melhor Envio — pra estornar, use Cancelar."))) return;
+      btn.disabled = true;
+      try {
+        await api(`/${id}/archive`, { method: "POST" });
+        await loadProcessing();
+        await refreshKpis();
+      } catch (error) {
+        await showAlert(`Erro ao remover: ${friendlyErrorMessage(error.message)}`);
+        btn.disabled = false;
+      }
     });
   });
 

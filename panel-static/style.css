@@ -395,13 +395,13 @@ tbody tr:hover {
    up across the row regardless of how tall the error cell gets. */
 .col-action {
   vertical-align: middle;
-  white-space: nowrap;
 }
 
 .col-action .btn {
   display: inline-block;
   vertical-align: middle;
   min-width: 104px;
+  margin: 2px 0;
   text-align: center;
 }
 
