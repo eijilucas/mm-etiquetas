@@ -95,7 +95,7 @@ a { color: inherit; }
 }
 
 main {
-  max-width: 1280px;
+  max-width: 1720px;
   margin: 0 auto;
   padding: 28px;
 }
@@ -390,25 +390,28 @@ tbody tr:hover {
   font-size: 12px;
 }
 
-/* "Rastreio" send button/input, tucked under the tracking code in the
-   Liberados table so it doesn't need a column of its own. */
-.released-tracking-send {
-  margin-top: 8px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
+/* Liberados "Enviar rastreio" column — compact so it earns its width. */
+.cell-send-tracking {
+  white-space: nowrap;
 }
 
-.released-tracking-send .btn {
+.cell-send-tracking .btn {
   padding: 6px 12px;
   font-size: 11px;
 }
 
-.released-tracking-send .text-input {
+.cell-send-tracking .text-input {
   padding: 6px 10px;
   font-size: 12px;
-  max-width: 150px;
+  max-width: 130px;
+  margin-right: 6px;
+}
+
+/* Keep one-value cells on a single line so columns stay aligned instead of
+   wrapping ("06/09/2026," above "01:14", a tracking code mid-break, etc.). */
+td.nowrap,
+th.nowrap {
+  white-space: nowrap;
 }
 
 dialog {

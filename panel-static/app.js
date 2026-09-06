@@ -441,7 +441,7 @@ function resolveReleasedTrackingCode(order) {
 }
 
 function releasedTrackingSendHtml(order) {
-  if (!canSendReleasedTracking(order)) return "";
+  if (!canSendReleasedTracking(order)) return "-";
   const ready = order.status === "tracking_ready";
   const auto = !ready && !!order.melhorEnvioOrderId;
   if (ready || auto) {
@@ -483,13 +483,11 @@ function renderReleasedRows() {
       <td>${order.customerName ?? "-"}</td>
       <td>${pill(order.status)}</td>
       <td>${order.shippingPrice != null ? formatCurrency(order.shippingPrice, order.currency) : "-"}</td>
-      <td>
-        ${order.trackingCode ?? "-"}
-        ${canSendReleasedTracking(order) ? `<div class="released-tracking-send">${releasedTrackingSendHtml(order)}</div>` : ""}
-      </td>
+      <td class="nowrap">${order.trackingCode ?? "-"}</td>
       <td>${order.labelPdfUrl ? `<a class="btn" href="${order.labelPdfUrl}" target="_blank" rel="noopener">Etiqueta</a>` : "-"}</td>
+      <td class="cell-send-tracking">${releasedTrackingSendHtml(order)}</td>
       <td class="error-text" title="${escapeAttr(order.lastError)}">${friendlyErrorMessage(order.lastError)}</td>
-      <td>${formatDate(order.updatedAt)}</td>
+      <td class="nowrap">${formatDate(order.updatedAt)}</td>
       <td>
         ${canReprocess ? `<button class="btn" data-reprocess="${order.id}">Reprocessar</button>` : ""}
         <button class="btn danger" data-cancel="${order.id}">Cancelar</button>
