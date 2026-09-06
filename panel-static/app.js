@@ -410,8 +410,49 @@ let processingOrders = [];
 const selectedProcessing = new Set();
 let cancelTargetId = null;
 
+// Live tracking-code lookups for "failed" Liberados rows that were actually
+// purchased (melhorEnvioOrderId set) but Melhor Envio hasn't assigned a code
+// yet — same /tracking-preview call the Rastreio tab uses, kept in its own
+// object so the two tabs don't stomp each other's state. Refreshed by
+// loadProcessing.
+let releasedTrackingPreviews = {};
+
 function updateReleasedBulkButtons() {
   document.getElementById("bulkPrintBtn").disabled = selectedProcessing.size === 0;
+}
+
+// Only "tracking_ready" (code already fetched) and "failed" (still waiting on
+// a code, or bought entirely outside this system) can have a code sent from
+// here — every other Liberados status has no code to send yet, or already
+// sent it (tracking_synced). Mirrors the Rastreio tab's own candidate rule.
+function canSendReleasedTracking(order) {
+  return order.status === "tracking_ready" || order.status === "failed";
+}
+
+// Same three cases as resolveManualTrackingCode in the Rastreio tab:
+//  - tracking_ready: the stored code
+//  - failed + melhorEnvioOrderId: whatever the live /tracking-preview returned
+//  - failed + no melhorEnvioOrderId: a code typed into the row's input
+function resolveReleasedTrackingCode(order) {
+  if (order.status === "tracking_ready") return order.trackingCode;
+  if (order.melhorEnvioOrderId) return releasedTrackingPreviews[order.id] ?? null;
+  const input = document.querySelector(`[data-released-tracking-input="${order.id}"]`);
+  return input ? input.value.trim() : null;
+}
+
+function releasedTrackingSendHtml(order) {
+  if (!canSendReleasedTracking(order)) return "-";
+  const ready = order.status === "tracking_ready";
+  const auto = !ready && !!order.melhorEnvioOrderId;
+  if (ready || auto) {
+    const hasCode = ready || !!releasedTrackingPreviews[order.id];
+    return `<button class="btn" data-send-released-tracking="${order.id}" ${hasCode ? "" : "disabled"}>Rastreio</button>`;
+  }
+  // failed, never purchased through this system — needs a code typed in
+  return `
+    <input type="text" class="text-input" data-released-tracking-input="${order.id}" placeholder="Codigo (comprado por fora)" style="max-width: 180px;" />
+    <button class="btn" data-send-released-tracking="${order.id}">Rastreio</button>
+  `;
 }
 
 // "Liberados" = approved through label-issued/failed, still not physically
@@ -421,10 +462,14 @@ function updateReleasedBulkButtons() {
 function renderReleasedRows() {
   const tbody = document.getElementById("releasedTableBody");
   const empty = document.getElementById("releasedEmpty");
+  // Newest freight purchase on top, to line up with the Melhor Envio
+  // "liberados" list. approved_at is the closest stable proxy for the
+  // purchase date (a reprocess doesn't move it, unlike updated_at); rows
+  // without one — e.g. legacy rows — fall back to updated_at.
   const orders = filterBySearch(
     processingOrders.filter((order) => !order.postedAt),
     "releasedSearch",
-  );
+  ).sort((a, b) => new Date(b.approvedAt ?? b.updatedAt).getTime() - new Date(a.approvedAt ?? a.updatedAt).getTime());
   tbody.innerHTML = "";
   empty.style.display = orders.length === 0 ? "block" : "none";
 
@@ -440,6 +485,7 @@ function renderReleasedRows() {
       <td>${order.shippingPrice != null ? formatCurrency(order.shippingPrice, order.currency) : "-"}</td>
       <td>${order.trackingCode ?? "-"}</td>
       <td>${order.labelPdfUrl ? `<a class="btn" href="${order.labelPdfUrl}" target="_blank" rel="noopener">Etiqueta</a>` : "-"}</td>
+      <td>${releasedTrackingSendHtml(order)}</td>
       <td class="error-text" title="${escapeAttr(order.lastError)}">${friendlyErrorMessage(order.lastError)}</td>
       <td>${formatDate(order.updatedAt)}</td>
       <td>
@@ -480,6 +526,40 @@ function renderReleasedRows() {
       document.getElementById("cancelLabelDialog").showModal();
     });
   });
+
+  // Individual "send tracking to the customer" straight from Liberados —
+  // same backend call (/:id/tracking -> manualTrackingSync) the Rastreio
+  // tab's Enviar button uses, but one order at a time and with an explicit
+  // confirm, since it fires Shopify's customer email and can't be undone.
+  tbody.querySelectorAll("[data-send-released-tracking]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.sendReleasedTracking;
+      const order = processingOrders.find((o) => o.id === id);
+      if (!order) return;
+      const trackingCode = resolveReleasedTrackingCode(order);
+      if (!trackingCode) {
+        if (!order.melhorEnvioOrderId) await showAlert("Informe o codigo de rastreio.");
+        return;
+      }
+      if (
+        !(await showConfirm(
+          `Enviar o rastreio (${trackingCode}) do pedido ${orderRef(order)} pro cliente?\n\n` +
+            `Isso dispara o e-mail automatico de rastreio da Shopify e nao da pra desfazer.`,
+        ))
+      ) {
+        return;
+      }
+      btn.disabled = true;
+      try {
+        await api(`/${id}/tracking`, { method: "POST", body: JSON.stringify({ trackingCode }) });
+        await loadProcessing();
+        await refreshKpis();
+      } catch (error) {
+        await showAlert(`Erro ao enviar rastreio: ${friendlyErrorMessage(error.message)}`);
+        btn.disabled = false;
+      }
+    });
+  });
 }
 
 function renderPostedRows() {
@@ -518,6 +598,24 @@ async function loadProcessing() {
     if (!selectableIds.has(id)) selectedProcessing.delete(id);
   }
   updateReleasedBulkButtons();
+
+  // Live tracking lookup for Liberados rows that were purchased but failed
+  // waiting on a code — so the "Rastreio" button there can send it without
+  // a manual round-trip. Only the still-unposted "failed" ones; tracking_ready
+  // rows already carry their code in order.trackingCode.
+  releasedTrackingPreviews = {};
+  const releasedAutoFetch = orders.filter((order) => !order.postedAt && order.status === "failed" && order.melhorEnvioOrderId);
+  if (releasedAutoFetch.length > 0) {
+    try {
+      const { previews } = await api("/tracking-preview", {
+        method: "POST",
+        body: JSON.stringify({ ids: releasedAutoFetch.map((order) => order.id) }),
+      });
+      releasedTrackingPreviews = previews;
+    } catch (error) {
+      console.error("tracking-preview (liberados) failed:", error);
+    }
+  }
 
   renderReleasedRows();
   renderPostedRows();
