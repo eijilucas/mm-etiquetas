@@ -167,6 +167,25 @@ function isRetryable(error: unknown): boolean {
   return true;
 }
 
+// Melhor Envio doesn't document a request-rate limit anywhere, so the
+// stagger added to the bulk-approve/retry loops (see orders-api/index.ts,
+// reconciliation.ts) is a conservative guess, not a proven-safe number.
+// Logs whatever rate-limit-shaped headers they actually send back (if any)
+// on every call, success or error, so real data — not another guess — can
+// tell us the real limit and let the stagger be tuned to it. Silent no-op
+// (nothing logged) if Melhor Envio sends none of these on a given response.
+function logRateLimitHeaders(path: string, response: Response): void {
+  const found: Record<string, string> = {};
+  for (const [key, value] of response.headers.entries()) {
+    if (/rate.?limit|retry-after/i.test(key)) {
+      found[key] = value;
+    }
+  }
+  if (Object.keys(found).length > 0) {
+    console.log(JSON.stringify({ path, status: response.status, headers: found, msg: "melhorenvio_rate_limit_headers" }));
+  }
+}
+
 async function meFetch<T>(config: AppConfig, path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${config.melhorEnvio.baseUrl}${path}`, {
     ...init,
@@ -178,6 +197,8 @@ async function meFetch<T>(config: AppConfig, path: string, init: RequestInit = {
       ...init.headers,
     },
   });
+
+  logRateLimitHeaders(path, response);
 
   const text = await response.text();
   const body = text ? JSON.parse(text) : undefined;

@@ -360,9 +360,12 @@ async function loadPending() {
 }
 
 function updateBulkButtons() {
-  const has = selectedPending.size > 0;
-  document.getElementById("approveBtn").disabled = !has;
-  document.getElementById("holdBtn").disabled = !has;
+  const count = selectedPending.size;
+  document.getElementById("approveBtn").disabled = count === 0;
+  document.getElementById("holdBtn").disabled = count === 0;
+  const counter = document.getElementById("pendingSelectedCount");
+  counter.textContent = count === 1 ? "1 selecionado" : `${count} selecionados`;
+  counter.classList.toggle("has-selection", count > 0);
 }
 
 // Printable = has a label already, so there's something to print at all.

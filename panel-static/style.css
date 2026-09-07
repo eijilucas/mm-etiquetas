@@ -215,6 +215,21 @@ main {
   flex-wrap: wrap;
 }
 
+.selected-count {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-label);
+  border: 1px solid var(--border-frame);
+  border-radius: 999px;
+  padding: 4px 12px;
+}
+
+.selected-count.has-selection {
+  color: var(--text-on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
 .store-filter {
   display: flex;
   gap: 8px;
