@@ -3,7 +3,7 @@ import type { AppConfig } from "./config.ts";
 import { fetchPaidUnfulfilledOrders, mapShopifyOrderToCandidate } from "./shopify.ts";
 import { upsertPendingCandidate } from "./db.ts";
 import { sendAlert, runShippingPipeline, TRACKING_NOT_YET_AVAILABLE_ERROR } from "./pipeline.ts";
-import { fetchTrackingBatch } from "./melhorenvio.ts";
+import { fetchTrackingBatch, POSTED_ME_STATUSES } from "./melhorenvio.ts";
 import { reportExternalStageChangeForIds } from "./integrationCallback.ts";
 import { sleep } from "./retry.ts";
 
@@ -78,10 +78,17 @@ export async function syncPostedOrders(supabase: SupabaseClient, config: AppConf
   const postedIds: string[] = [];
   for (const row of rows) {
     const entry = tracking[row.melhor_envio_order_id];
-    if (!entry?.posted_at) continue;
+    if (!entry) continue;
+    // ME shows the order as postado once it's past "released" — but it
+    // frequently leaves posted_at null even at status "received"/"delivered"
+    // (confirmed live). Trust the status, and fall back to generated_at for
+    // the timestamp when there's no posted_at to use.
+    const isPosted = !!entry.posted_at || POSTED_ME_STATUSES.has(entry.status ?? "");
+    if (!isPosted) continue;
+    const postedAt = entry.posted_at || entry.generated_at || new Date().toISOString();
     const { error: updateError } = await supabase
       .from("orders_shipping")
-      .update({ posted_at: entry.posted_at })
+      .update({ posted_at: postedAt })
       .eq("id", row.id)
       .is("posted_at", null); // don't clobber a manual mark that happened in between
     if (updateError) throw updateError;

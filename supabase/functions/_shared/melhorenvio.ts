@@ -391,10 +391,23 @@ export interface MeTrackingEntry {
   // When the shipment was created on Melhor Envio (cart -> purchase). This is
   // the field ME's panel list is ordered by (descending).
   created_at?: string;
-  // Set by Melhor Envio once the carrier scans the package in — this is the
-  // source of truth for "posted", no manual confirmation needed.
+  // When the label PDF was generated. Used as a "posted around here" proxy
+  // for shipments ME advanced past "released" without ever stamping
+  // posted_at (see syncPostedOrders).
+  generated_at?: string;
+  // Set by Melhor Envio when the carrier scans the package in — but ME does
+  // NOT populate it reliably: confirmed live that orders sitting at status
+  // "received" (already collected by the carrier, shown as postado in ME's
+  // own panel) still have posted_at = null. So it can't be the only signal
+  // for "posted" — see POSTED_ME_STATUSES in reconciliation.ts.
   posted_at?: string | null;
 }
+
+// ME order lifecycle past "released" (etiqueta gerada): the shipment has
+// left our hands. "posted" is the clean case; "received"/"delivered" mean it
+// was posted and moved on — and ME frequently skips straight to those
+// without a posted_at, so status has to be trusted too.
+export const POSTED_ME_STATUSES = new Set(["posted", "received", "delivered"]);
 
 // Batched: /me/shipment/tracking accepts multiple order ids per call and
 // keys the response by id, so the reconciliation sync can check every

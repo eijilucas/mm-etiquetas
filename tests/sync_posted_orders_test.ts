@@ -56,6 +56,29 @@ Deno.test("syncs posted_at from Melhor Envio for a released order the carrier ha
   assertEquals(order.posted_at, "2026-08-19 10:00:00");
 });
 
+Deno.test("treats status received/delivered as posted even when ME left posted_at null (falls back to generated_at)", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push(makeLiberadoOrder());
+
+  await withFetchMock(
+    (url) => {
+      if (url.includes("/me/shipment/tracking")) {
+        return jsonResponse({
+          "me-order-1": { id: "me-order-1", status: "received", posted_at: null, generated_at: "2026-09-06 08:21:52" },
+        });
+      }
+      throw new Error(`Unexpected fetch call: ${url}`);
+    },
+    // deno-lint-ignore no-explicit-any
+    async () => {
+      const result = await syncPostedOrders(fake as any, config);
+      assertEquals(result, { checked: 1, posted: 1 });
+    },
+  );
+
+  assertEquals(fake.table("orders_shipping")[0].posted_at, "2026-09-06 08:21:52");
+});
+
 Deno.test("leaves posted_at untouched when Melhor Envio hasn't recorded a post yet", async () => {
   const fake = makeFakeSupabase();
   fake.table("orders_shipping").push(makeLiberadoOrder());
