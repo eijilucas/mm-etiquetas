@@ -232,9 +232,10 @@ function renderPendingStoreFilter() {
     return;
   }
 
-  const countFor = (storeKey) => pendingOrders.filter((order) => order.storeKey === storeKey).length;
+  const countFor = (key) =>
+    key === "all" ? pendingOrders.length : pendingOrders.filter((order) => order.storeKey === key).length;
 
-  const buttons = keys.map((key) => ({ key, label: storeLabel(key) }));
+  const buttons = [{ key: "all", label: "Todos" }, ...keys.map((key) => ({ key, label: storeLabel(key) }))];
   container.innerHTML = buttons
     .map(
       ({ key, label }) =>
@@ -445,12 +446,13 @@ function renderReleasedStoreFilter() {
     return;
   }
 
-  const countFor = (storeKey) => unposted.filter((order) => order.storeKey === storeKey).length;
+  const countFor = (key) =>
+    key === "all" ? unposted.length : unposted.filter((order) => order.storeKey === key).length;
 
-  container.innerHTML = keys
+  container.innerHTML = [{ key: "all", label: "Todos" }, ...keys.map((key) => ({ key, label: storeLabel(key) }))]
     .map(
-      (key) =>
-        `<button class="store-filter-btn${releasedStoreFilter === key ? " active" : ""}" data-store="${key}">${storeLabel(key)} (${countFor(key)})</button>`,
+      ({ key, label }) =>
+        `<button class="store-filter-btn${releasedStoreFilter === key ? " active" : ""}" data-store="${key}">${label} (${countFor(key)})</button>`,
     )
     .join("");
 
