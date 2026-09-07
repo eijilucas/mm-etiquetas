@@ -132,6 +132,25 @@ export class InsufficientBalanceError extends MelhorEnvioApiError {
   }
 }
 
+// Melhor Envio occasionally answers a 2xx with a truly empty body (no
+// endpoint here legitimately succeeds with nothing back — even "no results"
+// responses come back as "[]"/"{}", which parse fine and never hit this).
+// Was previously swallowed silently: meFetch just returned undefined, and
+// every caller had to notice that on its own — checkoutCart's caller threw
+// its own ad-hoc error for it, while pickCheapestServiceId's caller didn't
+// notice at all and silently fell back to the fixed default service (the
+// root cause of "preço mais barato não está funcionando"). Does NOT extend
+// MelhorEnvioApiError on purpose, so isRetryable's default `return true`
+// picks it up automatically — every meFetch caller already wrapped in
+// withRetry now retries this the same as a 429/5xx instead of needing its
+// own special case.
+export class MelhorEnvioEmptyResponseError extends Error {
+  constructor(path: string) {
+    super(`Melhor Envio respondeu 2xx com corpo vazio para ${path}`);
+    this.name = "MelhorEnvioEmptyResponseError";
+  }
+}
+
 // Melhor Envio returns generic 400/422 for wallet-balance failures; there is
 // no dedicated error code documented, so this matches on message text.
 // TODO: confirmar codigo/mensagem exata de erro de saldo insuficiente contra a API real (sandbox ou producao).
@@ -168,6 +187,15 @@ async function meFetch<T>(config: AppConfig, path: string, init: RequestInit = {
       throw new InsufficientBalanceError(response.status, body);
     }
     throw new MelhorEnvioApiError(`Melhor Envio API error ${response.status}: ${describeErrorBody(body)}`, response.status, body);
+  }
+
+  // No endpoint below legitimately succeeds with a truly empty body — a
+  // "no results" response still comes back as "[]"/"{}", which parses to a
+  // real (non-undefined) value and never trips this. body is only undefined
+  // when the response had zero bytes, which is Melhor Envio's API glitching
+  // under load, not a valid outcome — see MelhorEnvioEmptyResponseError.
+  if (body === undefined) {
+    throw new MelhorEnvioEmptyResponseError(path);
   }
   return body as T;
 }

@@ -428,9 +428,12 @@ async function purchaseStep(supabase: SupabaseClient, config: AppConfig, order: 
     throw new Error("Cannot purchase: missing melhorEnvioCartId");
   }
   const checkout = await checkoutCart(config, [order.melhor_envio_cart_id]);
-  // meFetch returns undefined for a 2xx response with an empty body — rare,
-  // but was hitting an unguarded checkout.purchase and throwing a useless
-  // "Cannot read properties of undefined" instead of something reprocessable.
+  // meFetch itself now retries a 2xx-empty-body response automatically and
+  // throws MelhorEnvioEmptyResponseError if it never recovers (see
+  // melhorenvio.ts), so checkoutCart can no longer actually resolve
+  // undefined — this stays only as a type-safety backstop in case that
+  // guarantee ever changes, so a future regression fails loud and
+  // reprocessable instead of crashing on checkout.purchase.
   if (!checkout) {
     throw new Error("Melhor Envio checkout returned an empty response — retry via Reprocessar");
   }

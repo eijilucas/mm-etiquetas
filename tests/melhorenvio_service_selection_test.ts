@@ -66,3 +66,32 @@ Deno.test("still picks the true cheapest quote when no agency-restricted service
     },
   );
 });
+
+// Root cause of "preço mais barato não está funcionando": a transient 2xx
+// empty-body reply from /me/shipment/calculate (the same instability that
+// broke checkout) made calculateShipping throw immediately, which
+// pickCheapestServiceId's catch silently swallowed by falling back to the
+// fixed default service — no error, no trace, just the wrong (likely more
+// expensive) service quietly picked. meFetch now retries that automatically
+// (see MelhorEnvioEmptyResponseError), so a one-off empty reply must no
+// longer trigger the fallback — the real cheapest quote must still win.
+Deno.test("recovers from a transient empty response on /me/shipment/calculate instead of silently falling back to the default service", async () => {
+  let attempts = 0;
+  await withFetchMock(
+    () => {
+      attempts += 1;
+      if (attempts === 1) {
+        return new Response("", { status: 200 });
+      }
+      return jsonResponse([
+        { id: 1, name: "PAC", price: "25.00", company: { id: 1, name: "Correios" } },
+        { id: 2, name: "SEDEX", price: "40.00", company: { id: 1, name: "Correios" } },
+      ]);
+    },
+    async () => {
+      const serviceId = await pickCheapestServiceId(config, payload, "order-y");
+      assertEquals(attempts, 2);
+      assertEquals(serviceId, 1); // the real cheapest (PAC) — not config.melhorEnvio.serviceId's fallback
+    },
+  );
+});

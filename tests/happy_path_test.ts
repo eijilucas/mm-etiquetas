@@ -486,14 +486,43 @@ Deno.test("sends the stored customer_email as the recipient email on the cart pa
   assertEquals(cartRequestBody.to.email, "cliente@example.com");
 });
 
-Deno.test("fails with a clear, reprocessable message instead of crashing when Melhor Envio's checkout returns an empty body", async () => {
+Deno.test("recovers on its own from a checkout call that returns an empty body once, instead of falling straight to failed", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push(makeApprovedOrder());
+  let checkoutAttempts = 0;
+
+  await withFetchMock(
+    (url, init) => {
+      if (url.includes("/me/shipment/checkout")) {
+        checkoutAttempts += 1;
+        if (checkoutAttempts === 1) {
+          return new Response("", { status: 200 }); // 2xx with an empty body, first try -> meFetch now retries this automatically
+        }
+      }
+      return meAndShopifyHandler()(url, init);
+    },
+    // deno-lint-ignore no-explicit-any
+    () => runShippingPipeline(fake as any, config, "order-happy-1"),
+  );
+
+  const order = fake.table("orders_shipping")[0];
+  // Proves the actual fix (meFetch retries a 2xx-empty-body response, not
+  // just a friendlier error message): the pipeline reaches its normal
+  // terminal state on its own, no manual Reprocessar needed.
+  assertEquals(checkoutAttempts, 2);
+  assertEquals(order.status, "tracking_ready");
+  assertEquals(order.melhor_envio_order_id, "me-order-1");
+  assertEquals(order.last_error, null);
+});
+
+Deno.test("fails with a clear, reprocessable message when Melhor Envio's checkout keeps returning an empty body across every retry", async () => {
   const fake = makeFakeSupabase();
   fake.table("orders_shipping").push(makeApprovedOrder());
 
   await withFetchMock(
     (url, init) => {
       if (url.includes("/me/shipment/checkout")) {
-        return new Response("", { status: 200 }); // 2xx with an empty body -> meFetch resolves undefined
+        return new Response("", { status: 200 }); // 2xx with an empty body -> meFetch retries 3x, then throws
       }
       return meAndShopifyHandler()(url, init);
     },
@@ -503,7 +532,7 @@ Deno.test("fails with a clear, reprocessable message instead of crashing when Me
 
   const order = fake.table("orders_shipping")[0];
   assertEquals(order.status, "failed");
-  assertEquals(order.last_error, "Melhor Envio checkout returned an empty response — retry via Reprocessar");
+  assertEquals(order.last_error, "Melhor Envio respondeu 2xx com corpo vazio para /me/shipment/checkout");
 });
 
 Deno.test("carries the real Melhor Envio error message (not just the HTTP status) into last_error", async () => {

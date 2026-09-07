@@ -69,6 +69,13 @@ function friendlyErrorMessage(raw) {
   if (msg.includes("checkout returned an empty response")) {
     return "A Melhor Envio nao respondeu a compra. Clique em Reprocessar.";
   }
+  // Já tentamos de novo automaticamente 3x antes de chegar aqui (ver
+  // MelhorEnvioEmptyResponseError) — se ainda assim persistiu, é uma
+  // instabilidade mais séria do lado da Melhor Envio, não so uma resposta
+  // vazia isolada.
+  if (msg.includes("corpo vazio")) {
+    return "A Melhor Envio nao respondeu mesmo apos 3 tentativas automaticas. Espere um pouco e clique em Reprocessar.";
+  }
   if (msg.includes("missing melhorenvio") || msg.includes("no fulfillment order found") || msg.includes("no shopify store configured") || msg.includes("returned no fulfillment id")) {
     return "Erro interno inesperado nesse pedido — avise o time tecnico.";
   }
