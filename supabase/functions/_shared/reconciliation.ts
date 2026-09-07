@@ -29,9 +29,38 @@ export async function runReconciliation(
   let upserted = 0;
   for (const store of config.shopify.stores) {
     const orders = await fetchPaidUnfulfilledOrders(store);
+
+    // Skip the expensive part (one Shopify GraphQL call per order, inside
+    // mapShopifyOrderToCandidate) for orders we already have that have moved
+    // past pending_approval — held, in-pipeline, archived, external. For
+    // those, upsertPendingCandidate is a no-op anyway, so there's nothing to
+    // gain from re-fetching their current state every single run. Only brand
+    // new orders and ones still sitting in pending_approval (where a
+    // re-fetch keeps address/item edits in sync) actually get mapped. This
+    // is what keeps a store with a big backlog of held orders from timing
+    // the whole run out.
+    const skip = new Set<string>();
+    const allIds = orders.map((o) => String(o.id));
+    for (let i = 0; i < allIds.length; i += 200) {
+      const { data, error } = await supabase
+        .from("orders_shipping")
+        .select("shopify_order_id, status")
+        .eq("store_key", store.key)
+        .in("shopify_order_id", allIds.slice(i, i + 200));
+      if (error) throw error;
+      for (const row of data ?? []) {
+        if (row.status !== "pending_approval") skip.add(row.shopify_order_id);
+      }
+    }
+
     let storeUpserted = 0;
     let storeFailed = 0;
+    let storeSkipped = 0;
     for (const order of orders) {
+      if (skip.has(String(order.id))) {
+        storeSkipped += 1;
+        continue;
+      }
       // Per-order guard: a single order that can't be mapped (bad/edited
       // data, a transient Shopify error mid-run) must not abort the rest of
       // the store's batch — that used to silently strip every order after it
@@ -50,7 +79,10 @@ export async function runReconciliation(
     }
     scanned += orders.length;
     upserted += storeUpserted;
-    log({ storeKey: store.key, scanned: orders.length, upserted: storeUpserted, failed: storeFailed }, "reconciliation_store_done");
+    log(
+      { storeKey: store.key, scanned: orders.length, upserted: storeUpserted, skipped: storeSkipped, failed: storeFailed },
+      "reconciliation_store_done",
+    );
   }
   log({ scanned, upserted }, "reconciliation_done");
   return { scanned, upserted };

@@ -355,13 +355,28 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
     }
 
     // Same four steps reconciliation-cron runs on its own schedule, exposed
-    // here so a person can trigger a full catch-up on demand (e.g. to check
-    // for a tracking code right now instead of waiting for the next tick).
+    // here so a person can trigger a full catch-up on demand. Order matters:
+    // the cheap, high-value steps (sync posted status, retry stalled
+    // tracking, stuck alerts) run FIRST and each in its own try/catch, so
+    // the slow one — runReconciliation, one Shopify GraphQL call per
+    // paid+unfulfilled order — can't time the whole request out before they
+    // get a turn (which is exactly why "Sincronizar agora" wasn't moving
+    // orders to Postados).
     if (req.method === "POST" && isReconciliationRun) {
-      const result = await runReconciliation(supabase, config);
-      await checkStuckOrders(supabase, config);
-      await syncPostedOrders(supabase, config);
-      await retryStalledTracking(supabase, config);
+      const step = async (label: string, fn: () => Promise<unknown>) => {
+        try {
+          await fn();
+        } catch (error) {
+          console.log(JSON.stringify({ level: "error", step: label, err: String(error), msg: "reconciliation_run_step_failed" }));
+        }
+      };
+      await step("syncPostedOrders", () => syncPostedOrders(supabase, config));
+      await step("retryStalledTracking", () => retryStalledTracking(supabase, config));
+      await step("checkStuckOrders", () => checkStuckOrders(supabase, config));
+      let result: unknown = { scanned: 0, upserted: 0 };
+      await step("runReconciliation", async () => {
+        result = await runReconciliation(supabase, config);
+      });
       return json(result);
     }
 

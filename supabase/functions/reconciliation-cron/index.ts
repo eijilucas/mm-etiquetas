@@ -55,10 +55,24 @@ export async function handleReconciliationCron(req: Request, deps: Deps = {}): P
   }
 
   try {
-    const result = await runReconciliation(supabase, config);
-    await checkStuckOrders(supabase, config);
-    await syncPostedOrders(supabase, config);
-    await retryStalledTracking(supabase, config);
+    // Cheap, high-value steps first, each isolated — runReconciliation (one
+    // Shopify GraphQL call per paid+unfulfilled order) is the slow one and
+    // must not be able to eat the whole invocation's time budget before the
+    // others run.
+    const step = async (label: string, fn: () => Promise<unknown>) => {
+      try {
+        await fn();
+      } catch (error) {
+        console.log(JSON.stringify({ level: "error", step: label, err: String(error), msg: "reconciliation_cron_step_failed" }));
+      }
+    };
+    await step("syncPostedOrders", () => syncPostedOrders(supabase, config));
+    await step("retryStalledTracking", () => retryStalledTracking(supabase, config));
+    await step("checkStuckOrders", () => checkStuckOrders(supabase, config));
+    let result: unknown = { scanned: 0, upserted: 0 };
+    await step("runReconciliation", async () => {
+      result = await runReconciliation(supabase, config);
+    });
     return new Response(JSON.stringify(result), { status: 200, headers: { "Content-Type": "application/json" } });
   } catch (error) {
     console.log(JSON.stringify({ level: "error", err: String(error), msg: "reconciliation_cron_failed" }));
