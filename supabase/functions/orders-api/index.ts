@@ -132,11 +132,14 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
     if (req.method === "GET" && segments[0] === "processing") {
       // This list only shrinks via /archive, so it grows without bound over
       // time — trimmed to the columns Liberados/Postados/Rastreio actually
-      // render (drops items/shipping_address, the two heaviest jsonb columns).
+      // render (drops shipping_address, the heaviest jsonb column not shown
+      // anywhere here). items is kept: Liberados shows the piece name/variant
+      // so whoever's separating the order can match it to the physical item,
+      // same as the Fila de aprovação table already does.
       const { data, error } = await supabase
         .from("orders_shipping")
         .select(
-          "id, store_key, shopify_order_id, shopify_order_number, customer_name, currency, status, shipping_price, tracking_code, label_pdf_url, last_error, melhor_envio_order_id, approved_at, updated_at, posted_at, posted_by",
+          "id, store_key, shopify_order_id, shopify_order_number, customer_name, currency, status, shipping_price, tracking_code, label_pdf_url, last_error, melhor_envio_order_id, approved_at, updated_at, posted_at, posted_by, items",
         )
         .in("status", PROCESSING_STATUSES)
         .order("updated_at", { ascending: false });

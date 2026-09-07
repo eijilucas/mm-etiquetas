@@ -419,6 +419,41 @@ async function openAllLabels(orders) {
 let processingOrders = [];
 const selectedProcessing = new Set();
 let cancelTargetId = null;
+let releasedStoreFilter = "all";
+
+// Same store-filter pill row as the Fila de aprovação, scoped to whichever
+// orders are actually sitting in Liberados right now (unposted) — a store
+// with only posted orders left just drops off the row instead of showing a
+// dead (0) pill.
+function renderReleasedStoreFilter() {
+  const container = document.getElementById("releasedStoreFilter");
+  const unposted = processingOrders.filter((order) => !order.postedAt);
+  const keys = Array.from(new Set(unposted.map((order) => order.storeKey))).sort((a, b) =>
+    storeLabel(a).localeCompare(storeLabel(b)),
+  );
+
+  if (keys.length === 0) {
+    container.innerHTML = "";
+    return;
+  }
+
+  const countFor = (storeKey) => unposted.filter((order) => order.storeKey === storeKey).length;
+
+  container.innerHTML = keys
+    .map(
+      (key) =>
+        `<button class="store-filter-btn${releasedStoreFilter === key ? " active" : ""}" data-store="${key}">${storeLabel(key)} (${countFor(key)})</button>`,
+    )
+    .join("");
+
+  container.querySelectorAll(".store-filter-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      releasedStoreFilter = btn.dataset.store;
+      renderReleasedStoreFilter();
+      renderReleasedRows();
+    });
+  });
+}
 
 // Per-order data pulled live from Melhor Envio for the Liberados tab,
 // refreshed by loadProcessing (one batched /tracking-preview call):
@@ -482,10 +517,9 @@ function renderReleasedRows() {
   // protocol — they're the most recent activity, so they sit on top, ordered
   // among themselves by approval time.
   const meProtocol = (order) => releasedMeMeta[order.id]?.protocol || null;
-  const orders = filterBySearch(
-    processingOrders.filter((order) => !order.postedAt),
-    "releasedSearch",
-  ).sort((a, b) => {
+  const unposted = processingOrders.filter((order) => !order.postedAt);
+  const storeFiltered = releasedStoreFilter === "all" ? unposted : unposted.filter((order) => order.storeKey === releasedStoreFilter);
+  const orders = filterBySearch(storeFiltered, "releasedSearch").sort((a, b) => {
     const pa = meProtocol(a);
     const pb = meProtocol(b);
     if (pa && pb) return pb.localeCompare(pa);
@@ -505,6 +539,7 @@ function renderReleasedRows() {
       <td>${orderRefHtml(order)}</td>
       <td>${storeCell(order)}</td>
       <td>${order.customerName ?? "-"}</td>
+      <td class="items-list">${itemsSummary(order.items)}</td>
       <td>${pill(order.status)}</td>
       <td>${order.shippingPrice != null ? formatCurrency(order.shippingPrice, order.currency) : "-"}</td>
       <td class="nowrap">${order.trackingCode ?? "-"}</td>
@@ -645,6 +680,11 @@ async function loadProcessing() {
   // One batched Melhor Envio lookup for every unposted Liberados row that
   // has an ME order: gives us the tracking code (for the failed rows' send
   // button) and the ME protocol/created_at (to sort the table like ME does).
+  if (releasedStoreFilter !== "all" && !orders.some((order) => !order.postedAt && order.storeKey === releasedStoreFilter)) {
+    releasedStoreFilter = "all";
+  }
+  renderReleasedStoreFilter();
+
   releasedTrackingPreviews = {};
   releasedMeMeta = {};
   const releasedWithMeOrder = orders.filter((order) => !order.postedAt && order.melhorEnvioOrderId);
