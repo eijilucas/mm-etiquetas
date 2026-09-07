@@ -534,6 +534,16 @@ function renderReleasedRows() {
     if (!pa && !pb) return new Date(b.approvedAt ?? b.updatedAt).getTime() - new Date(a.approvedAt ?? a.updatedAt).getTime();
     return pa ? 1 : -1;
   });
+
+  // The Itens column only ever has something to show for Vendas Externas
+  // orders (see itemsSummaryExternalOnly) — filtering to Básico/Exclusivos
+  // alone leaves every row's cell as "-", so hide the whole column then
+  // instead of showing a column of dashes. Stays visible on "all" or when
+  // filtered to external itself. A class on the tab (not inline styles on
+  // each cell) so it also covers rows appended below, after this runs.
+  const showItemsColumn = releasedStoreFilter === "all" || releasedStoreFilter === "external";
+  document.getElementById("tab-released").classList.toggle("hide-items-column", !showItemsColumn);
+
   tbody.innerHTML = "";
   empty.style.display = orders.length === 0 ? "block" : "none";
 
@@ -547,7 +557,7 @@ function renderReleasedRows() {
       <td>${orderRefHtml(order)}</td>
       <td>${storeCell(order)}</td>
       <td>${order.customerName ?? "-"}</td>
-      <td class="items-list">${itemsSummaryExternalOnly(order)}</td>
+      <td class="col-items items-list">${itemsSummaryExternalOnly(order)}</td>
       <td>${pill(order.status)}</td>
       <td>${order.shippingPrice != null ? formatCurrency(order.shippingPrice, order.currency) : "-"}</td>
       <td class="nowrap">${order.trackingCode ?? "-"}</td>

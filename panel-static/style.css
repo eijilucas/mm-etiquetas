@@ -400,6 +400,10 @@ tbody tr:hover {
   color: var(--accent);
 }
 
+#tab-released.hide-items-column .col-items {
+  display: none;
+}
+
 .error-text {
   color: #ff6b6b;
   font-size: 12px;
