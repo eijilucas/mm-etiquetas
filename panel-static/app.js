@@ -1182,6 +1182,14 @@ function setupToolbar() {
     updateBulkButtons();
   });
 
+  document.getElementById("deselectAllBtn").addEventListener("click", () => {
+    selectedPending.clear();
+    document.querySelectorAll('#pendingTableBody input[type="checkbox"]').forEach((checkbox) => {
+      checkbox.checked = false;
+    });
+    updateBulkButtons();
+  });
+
   document.getElementById("approveBtn").addEventListener("click", async () => {
     if (selectedPending.size === 0) return;
     const btn = document.getElementById("approveBtn");
