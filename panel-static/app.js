@@ -192,6 +192,14 @@ function itemsSummary(items) {
     .join(", ");
 }
 
+// Item names are only useful for Vendas Externas orders (storeKey
+// "external") — those are the ones with varied, hand-picked items that need
+// matching against the physical piece. Shopify store orders don't need it
+// here, so the Itens column stays blank for them instead of adding noise.
+function itemsSummaryExternalOnly(order) {
+  return order.storeKey === "external" ? itemsSummary(order.items) : "-";
+}
+
 function pill(status) {
   return `<span class="pill status-${status}">${STATUS_LABELS[status] || status}</span>`;
 }
@@ -539,7 +547,7 @@ function renderReleasedRows() {
       <td>${orderRefHtml(order)}</td>
       <td>${storeCell(order)}</td>
       <td>${order.customerName ?? "-"}</td>
-      <td class="items-list">${itemsSummary(order.items)}</td>
+      <td class="items-list">${itemsSummaryExternalOnly(order)}</td>
       <td>${pill(order.status)}</td>
       <td>${order.shippingPrice != null ? formatCurrency(order.shippingPrice, order.currency) : "-"}</td>
       <td class="nowrap">${order.trackingCode ?? "-"}</td>
