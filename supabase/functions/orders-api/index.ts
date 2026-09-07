@@ -8,7 +8,19 @@ import { runReconciliation, checkStuckOrders, syncPostedOrders, retryStalledTrac
 import { fetchAccountBalance, fetchDeclarationPdfUrl, fetchTrackingBatch } from "../_shared/melhorenvio.ts";
 import { fetchPaidFulfilledOrders, mapShopifyOrderToCandidate, latestFulfillmentTracking } from "../_shared/shopify.ts";
 import { reportExternalStageChangeForIds } from "../_shared/integrationCallback.ts";
+import { sleep } from "../_shared/retry.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
+
+// Espaçamento entre o disparo do pipeline de cada pedido numa aprovação em
+// lote. Sem isso, aprovar N pedidos de uma vez manda ~N chamadas de compra
+// pra Melhor Envio quase simultâneas (backgroundRun não espera uma acabar
+// pra começar a próxima) — foi essa rajada, não coincidência, que fez vários
+// pedidos voltarem com "checkout returned an empty response" no mesmo
+// instante (ver last_error do dia 2026-09-06). O valor é um chute
+// conservador — a Melhor Envio não documenta o limite real de requisições.
+// TODO: ajustar pra baixo se confirmarmos (via log de headers de rate limit)
+// que dava pra ir mais rápido sem esbarrar no limite deles.
+const APPROVE_PIPELINE_STAGGER_MS = 1200;
 
 const PROCESSING_STATUSES: ShippingStatus[] = [
   "approved",
@@ -220,6 +232,7 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
       }
 
       const results: { id: string; ok: boolean; error?: string }[] = [];
+      let pipelinesStarted = 0;
       for (const id of body.ids) {
         const { data: order, error: findError } = await supabase
           .from("orders_shipping")
@@ -245,7 +258,16 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
         // approve is one of only two routes allowed to run the shipping
         // pipeline. It runs after the status write so the caller's response
         // (below) returns immediately, matching the old "enqueue and return" UX.
-        backgroundRun(runPipeline(supabase, config, id));
+        // Escalonado (ver APPROVE_PIPELINE_STAGGER_MS) pra não disparar um
+        // lote inteiro de compras na Melhor Envio no mesmo instante.
+        const delayMs = pipelinesStarted * APPROVE_PIPELINE_STAGGER_MS;
+        pipelinesStarted += 1;
+        backgroundRun(
+          (async () => {
+            if (delayMs > 0) await sleep(delayMs);
+            await runPipeline(supabase, config, id);
+          })(),
+        );
         results.push({ id, ok: true });
       }
       return json({ results });
