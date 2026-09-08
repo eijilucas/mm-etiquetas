@@ -782,6 +782,123 @@ Deno.test("external backfill paginates through Shopify and skips orders already 
   assertEquals(rows.find((r) => r.shopify_order_id === "9003")?.tracking_code, "TRACK-9003");
 });
 
+Deno.test("restore infers held from held_at, since /archive never clears it", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push({
+    id: "order-was-held",
+    store_key: "external",
+    shopify_order_id: "7101",
+    status: "archived",
+    held_reason: "CEP invalido",
+    held_at: "2026-09-08T10:00:00Z",
+    archived_at: "2026-09-08T11:00:00Z",
+    archived_by: "vitor@m3ntalmadness.com",
+  });
+
+  const req = new Request("http://localhost/functions/v1/orders-api/order-was-held/restore", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+  });
+
+  // deno-lint-ignore no-explicit-any
+  const res = await handleOrdersApi(req, { config, supabase: fake as any });
+
+  assertEquals(res.status, 200);
+  assertEquals(await res.json(), { ok: true, status: "held" });
+  const order = fake.table("orders_shipping")[0];
+  assertEquals(order.status, "held");
+  assertEquals(order.archived_at, null);
+  assertEquals(order.archived_by, null);
+});
+
+Deno.test("restore infers tracking_ready from a tracking_code left over, when there's no held_at", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push({
+    id: "order-was-ready",
+    store_key: "external",
+    shopify_order_id: "7102",
+    status: "archived",
+    tracking_code: "ME262D522P9BR",
+    melhor_envio_order_id: "me-ready",
+  });
+
+  const req = new Request("http://localhost/functions/v1/orders-api/order-was-ready/restore", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+  });
+
+  // deno-lint-ignore no-explicit-any
+  const res = await handleOrdersApi(req, { config, supabase: fake as any });
+
+  assertEquals(res.status, 200);
+  assertEquals(await res.json(), { ok: true, status: "tracking_ready" });
+  assertEquals(fake.table("orders_shipping")[0].status, "tracking_ready");
+});
+
+Deno.test("restore falls back to failed when neither held_at nor tracking_code is set", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push({
+    id: "order-was-failed",
+    store_key: "external",
+    shopify_order_id: "7103",
+    status: "archived",
+    last_error: "Melhor Envio API error 422: sem detalhes na resposta",
+  });
+
+  const req = new Request("http://localhost/functions/v1/orders-api/order-was-failed/restore", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+  });
+
+  // deno-lint-ignore no-explicit-any
+  const res = await handleOrdersApi(req, { config, supabase: fake as any });
+
+  assertEquals(res.status, 200);
+  assertEquals(await res.json(), { ok: true, status: "failed" });
+  assertEquals(fake.table("orders_shipping")[0].status, "failed");
+});
+
+Deno.test("refuses to restore an order that isn't archived", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push({
+    id: "order-not-archived",
+    store_key: "test",
+    shopify_order_id: "7104",
+    status: "failed",
+  });
+
+  const req = new Request("http://localhost/functions/v1/orders-api/order-not-archived/restore", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+  });
+
+  // deno-lint-ignore no-explicit-any
+  const res = await handleOrdersApi(req, { config, supabase: fake as any });
+
+  assertEquals(res.status, 400);
+  assertEquals(fake.table("orders_shipping")[0].status, "failed");
+});
+
+Deno.test("GET /archived lists archived orders newest first", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push(
+    { id: "a1", store_key: "external", shopify_order_id: "7105", status: "archived", archived_at: "2026-09-08T09:00:00Z", archived_by: "vitor@m3ntalmadness.com" },
+    { id: "a2", store_key: "external", shopify_order_id: "7106", status: "archived", archived_at: "2026-09-08T12:00:00Z", archived_by: "vitor@m3ntalmadness.com" },
+    { id: "a3", store_key: "test", shopify_order_id: "7107", status: "failed" },
+  );
+
+  const req = new Request("http://localhost/functions/v1/orders-api/archived", {
+    headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+  });
+
+  // deno-lint-ignore no-explicit-any
+  const res = await handleOrdersApi(req, { config, supabase: fake as any });
+
+  assertEquals(res.status, 200);
+  const { orders } = await res.json();
+  assertEquals(orders.map((o: { id: string }) => o.id), ["a2", "a1"]);
+});
+
 Deno.test("kpi-counts returns head:true counts per bucket, not full rows", async () => {
   const fake = makeFakeSupabase();
   fake.table("orders_shipping").push(

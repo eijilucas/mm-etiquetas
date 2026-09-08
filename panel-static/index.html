@@ -61,6 +61,7 @@
       <button class="tab-btn" data-tab="posted">Postados</button>
       <button class="tab-btn" data-tab="external">Processados por fora</button>
       <button class="tab-btn" data-tab="held">Em espera (held)</button>
+      <button class="tab-btn" data-tab="archived">Arquivados</button>
     </div>
 
     <section class="tab-panel active" id="tab-pending">
@@ -235,6 +236,33 @@
         </table>
         </div>
         <div class="empty-state" id="heldEmpty" style="display:none;">Nenhum pedido em espera.</div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-archived">
+      <div class="card">
+        <div class="toolbar">
+          <button class="btn" id="refreshArchivedBtn">Atualizar</button>
+          <input type="text" class="text-input" id="archivedSearch" placeholder="Buscar por numero do pedido ou cliente" style="margin-left: auto;" />
+        </div>
+        <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Pedido</th>
+              <th>Loja</th>
+              <th>Cliente</th>
+              <th class="col-items">Itens</th>
+              <th>Motivo / Ultimo erro</th>
+              <th class="nowrap">Arquivado em</th>
+              <th>Arquivado por</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="archivedTableBody"></tbody>
+        </table>
+        </div>
+        <div class="empty-state" id="archivedEmpty" style="display:none;">Nenhum pedido arquivado.</div>
       </div>
     </section>
   </main>

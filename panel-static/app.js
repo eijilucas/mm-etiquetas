@@ -776,6 +776,54 @@ function renderHeldRows() {
   });
 }
 
+let archivedOrders = [];
+
+async function loadArchived() {
+  const { orders } = await api("/archived");
+  archivedOrders = orders;
+  renderArchivedRows();
+  return orders;
+}
+
+function renderArchivedRows() {
+  const tbody = document.getElementById("archivedTableBody");
+  const empty = document.getElementById("archivedEmpty");
+  const orders = filterBySearch(archivedOrders, "archivedSearch");
+  tbody.innerHTML = "";
+  empty.style.display = orders.length === 0 ? "block" : "none";
+
+  for (const order of orders) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${orderRefHtml(order)}</td>
+      <td>${storeCell(order)}</td>
+      <td>${order.customerName ?? "-"}</td>
+      <td class="col-items items-list">${itemsSummaryExternalOnly(order)}</td>
+      <td class="error-text" title="${escapeAttr(order.lastError)}">${order.heldReason ?? (friendlyErrorMessage(order.lastError) || "-")}</td>
+      <td class="nowrap">${formatDate(order.archivedAt)}</td>
+      <td>${order.archivedBy ?? "-"}</td>
+      <td><button class="btn" data-restore="${order.id}">Restaurar</button></td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  // Where it lands (held / aguardando envio / falhou) is inferred on the
+  // backend from fields /archive never touched — see the /restore route.
+  tbody.querySelectorAll("[data-restore]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await api(`/${btn.dataset.restore}/restore`, { method: "POST" });
+        await loadArchived();
+        await refreshKpis();
+      } catch (error) {
+        await showAlert(`Erro ao restaurar: ${friendlyErrorMessage(error.message)}`);
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
 let externalOrders = [];
 
 // Read-only history: orders fulfilled entirely outside this system (see
@@ -1069,6 +1117,7 @@ function setupTabs() {
       if (btn.dataset.tab === "held") loadHeld();
       if (btn.dataset.tab === "manual-tracking") loadManualTracking();
       if (btn.dataset.tab === "external") loadExternal();
+      if (btn.dataset.tab === "archived") loadArchived();
     });
   });
 }
@@ -1201,6 +1250,7 @@ function setupToolbar() {
   document.getElementById("postedSearch").addEventListener("input", renderPostedRows);
   document.getElementById("heldSearch").addEventListener("input", renderHeldRows);
   document.getElementById("externalSearch").addEventListener("input", renderExternalRows);
+  document.getElementById("archivedSearch").addEventListener("input", renderArchivedRows);
 
   document.getElementById("selectAllReleasedBtn").addEventListener("click", () => {
     const checkboxes = document.querySelectorAll('#releasedTableBody input[type="checkbox"]');
@@ -1299,6 +1349,7 @@ function setupToolbar() {
   document.getElementById("refreshPostedBtn").addEventListener("click", loadProcessing);
   document.getElementById("refreshHeldBtn").addEventListener("click", loadHeld);
   document.getElementById("refreshExternalBtn").addEventListener("click", loadExternal);
+  document.getElementById("refreshArchivedBtn").addEventListener("click", loadArchived);
 
   document.getElementById("backfillExternalBtn").addEventListener("click", async (event) => {
     const btn = event.currentTarget;
@@ -1350,6 +1401,7 @@ async function loadAll() {
     if (activeTab === "held") tasks.push(loadHeld());
     if (activeTab === "external") tasks.push(loadExternal());
     if (activeTab === "manual-tracking") tasks.push(loadManualTracking());
+    if (activeTab === "archived") tasks.push(loadArchived());
     const [counts] = await Promise.all(tasks);
     renderKpis(counts);
   } catch (error) {

@@ -51,6 +51,8 @@ export interface OrderShippingRow {
   webhook_event_id: string | null;
   posted_at: string | null;
   posted_by: string | null;
+  archived_at: string | null;
+  archived_by: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -102,6 +104,8 @@ export interface OrderShippingApiShape {
   webhookEventId: string | null;
   postedAt: string | null;
   postedBy: string | null;
+  archivedAt: string | null;
+  archivedBy: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -143,6 +147,8 @@ export function toApiShape(row: OrderShippingRow): OrderShippingApiShape {
     webhookEventId: row.webhook_event_id,
     postedAt: row.posted_at,
     postedBy: row.posted_by,
+    archivedAt: row.archived_at,
+    archivedBy: row.archived_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

@@ -157,6 +157,23 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
       return json({ orders: (data as OrderShippingRow[]).map(toApiShape) });
     }
 
+    // Orders dismissed via /archive — kept for the rare "shouldn't have
+    // archived that" case, so a person can find and undo it instead of it
+    // being gone from the panel for good. items is included: same reasoning
+    // as /processing, lets Restaurar-adjacent review show the piece for
+    // Vendas Externas orders.
+    if (req.method === "GET" && segments[0] === "archived") {
+      const { data, error } = await supabase
+        .from("orders_shipping")
+        .select(
+          "id, store_key, shopify_order_id, shopify_order_number, customer_name, items, last_error, held_reason, held_at, tracking_code, label_pdf_url, archived_at, archived_by",
+        )
+        .eq("status", "archived")
+        .order("archived_at", { ascending: false });
+      if (error) throw error;
+      return json({ orders: (data as OrderShippingRow[]).map(toApiShape) });
+    }
+
     // Read-only history: orders fulfilled entirely outside this system (see
     // shopify-webhook's "external" recording). Nothing here is ever acted
     // on -- no approve/hold/archive route touches this status.
@@ -436,6 +453,29 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
         .eq("id", id);
       if (error) throw error;
       return json({ ok: true });
+    }
+
+    // Undo an /archive. There's no stored "status before archiving" column,
+    // so this infers it from fields /archive never touches: held_at is only
+    // ever set by /hold (which only fires from pending_approval — an order
+    // that reached the shipping pipeline never has one), and tracking_code
+    // is only ever set once Melhor Envio hands back a code. Between the
+    // three statuses /archive accepts (held, tracking_ready, failed), that
+    // pins down exactly which one this was.
+    if (req.method === "POST" && segments[1] === "restore") {
+      const id = segments[0];
+      const { data: order, error: findError } = await supabase.from("orders_shipping").select("*").eq("id", id).single();
+      if (findError || !order) return json({ error: "not_found" }, 404);
+      if (order.status !== "archived") {
+        return json({ error: `cannot restore order in status ${order.status}` }, 400);
+      }
+      const restoredStatus: ShippingStatus = order.held_at ? "held" : order.tracking_code ? "tracking_ready" : "failed";
+      const { error } = await supabase
+        .from("orders_shipping")
+        .update({ status: restoredStatus, archived_at: null, archived_by: null })
+        .eq("id", id);
+      if (error) throw error;
+      return json({ ok: true, status: restoredStatus });
     }
 
     // For a shipment purchased entirely outside this system (e.g. the CEP
