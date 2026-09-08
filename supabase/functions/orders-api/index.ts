@@ -139,7 +139,7 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
       const { data, error } = await supabase
         .from("orders_shipping")
         .select(
-          "id, store_key, shopify_order_id, shopify_order_number, customer_name, currency, status, shipping_price, tracking_code, label_pdf_url, last_error, melhor_envio_order_id, approved_at, updated_at, posted_at, posted_by, items",
+          "id, store_key, shopify_order_id, shopify_order_number, customer_name, currency, status, shipping_price, tracking_code, label_pdf_url, last_error, melhor_envio_order_id, paid_at, approved_at, updated_at, posted_at, posted_by, items",
         )
         .in("status", PROCESSING_STATUSES)
         .order("updated_at", { ascending: false });

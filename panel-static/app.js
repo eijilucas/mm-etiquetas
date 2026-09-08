@@ -464,15 +464,10 @@ function renderReleasedStoreFilter() {
   });
 }
 
-// Per-order data pulled live from Melhor Envio for the Liberados tab,
-// refreshed by loadProcessing (one batched /tracking-preview call):
-//  - releasedTrackingPreviews[id]: the tracking code ME already has, for the
-//    "failed" rows whose Rastreio button sends it.
-//  - releasedMeMeta[id]: { protocol, createdAt } — ME's own order protocol,
-//    used to sort the table in the exact same order as ME's "Pedidos" list
-//    (ME sorts by created_at desc, which is protocol desc).
+// Tracking codes Melhor Envio already has for the "failed" Liberados rows,
+// so their "Rastreio" button can send without a manual lookup. Refreshed by
+// loadProcessing.
 let releasedTrackingPreviews = {};
-let releasedMeMeta = {};
 
 function updateReleasedBulkButtons() {
   document.getElementById("bulkPrintBtn").disabled = selectedProcessing.size === 0;
@@ -519,22 +514,13 @@ function releasedTrackingSendHtml(order) {
 function renderReleasedRows() {
   const tbody = document.getElementById("releasedTableBody");
   const empty = document.getElementById("releasedEmpty");
-  // Same row order as Melhor Envio's own "Pedidos" list: ME sorts by when
-  // the shipment was created on ME (created_at desc == protocol desc). We
-  // sort by the ME protocol pulled in loadProcessing. Rows not on ME yet
-  // (approved / cart_created, or a failure before the cart step) have no
-  // protocol — they're the most recent activity, so they sit on top, ordered
-  // among themselves by approval time.
-  const meProtocol = (order) => releasedMeMeta[order.id]?.protocol || null;
+  // Pedido mais recente em primeiro: ordena pela data do pedido na Shopify
+  // (paid_at). Cai pra updated_at só se não houver paid_at (linha antiga).
   const unposted = processingOrders.filter((order) => !order.postedAt);
   const storeFiltered = releasedStoreFilter === "all" ? unposted : unposted.filter((order) => order.storeKey === releasedStoreFilter);
-  const orders = filterBySearch(storeFiltered, "releasedSearch").sort((a, b) => {
-    const pa = meProtocol(a);
-    const pb = meProtocol(b);
-    if (pa && pb) return pb.localeCompare(pa);
-    if (!pa && !pb) return new Date(b.approvedAt ?? b.updatedAt).getTime() - new Date(a.approvedAt ?? a.updatedAt).getTime();
-    return pa ? 1 : -1;
-  });
+  const orders = filterBySearch(storeFiltered, "releasedSearch").sort(
+    (a, b) => new Date(b.paidAt ?? b.updatedAt).getTime() - new Date(a.paidAt ?? a.updatedAt).getTime(),
+  );
 
   // The Itens column only ever has something to show for Vendas Externas
   // orders (see itemsSummaryExternalOnly) — filtering to Básico/Exclusivos
@@ -696,25 +682,24 @@ async function loadProcessing() {
   }
   updateReleasedBulkButtons();
 
-  // One batched Melhor Envio lookup for every unposted Liberados row that
-  // has an ME order: gives us the tracking code (for the failed rows' send
-  // button) and the ME protocol/created_at (to sort the table like ME does).
   if (releasedStoreFilter !== "all" && !orders.some((order) => !order.postedAt && order.storeKey === releasedStoreFilter)) {
     releasedStoreFilter = "all";
   }
   renderReleasedStoreFilter();
 
+  // Live tracking-code lookup only for the "failed" rows whose Rastreio
+  // button needs it (Melhor Envio already has a code but our pipeline
+  // hasn't stored it) — everything else sorts/renders from data we already
+  // have.
   releasedTrackingPreviews = {};
-  releasedMeMeta = {};
-  const releasedWithMeOrder = orders.filter((order) => !order.postedAt && order.melhorEnvioOrderId);
-  if (releasedWithMeOrder.length > 0) {
+  const failedWithMeOrder = orders.filter((order) => !order.postedAt && order.status === "failed" && order.melhorEnvioOrderId);
+  if (failedWithMeOrder.length > 0) {
     try {
-      const { previews, meta } = await api("/tracking-preview", {
+      const { previews } = await api("/tracking-preview", {
         method: "POST",
-        body: JSON.stringify({ ids: releasedWithMeOrder.map((order) => order.id) }),
+        body: JSON.stringify({ ids: failedWithMeOrder.map((order) => order.id) }),
       });
       releasedTrackingPreviews = previews ?? {};
-      releasedMeMeta = meta ?? {};
     } catch (error) {
       console.error("tracking-preview (liberados) failed:", error);
     }
