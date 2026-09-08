@@ -409,19 +409,54 @@ export interface MeTrackingEntry {
 // without a posted_at, so status has to be trusted too.
 export const POSTED_ME_STATUSES = new Set(["posted", "received", "delivered"]);
 
+const TRACKING_BATCH_SIZE = 100;
+
 // Batched: /me/shipment/tracking accepts multiple order ids per call and
 // keys the response by id, so the reconciliation sync can check every
-// not-yet-posted order in one request instead of one per order.
+// not-yet-posted order in a handful of requests instead of one per order.
+//
+// The catch: ME 422s the WHOLE request if a single id in the list is
+// malformed — confirmed live, "O campo orders.N deve ter pelo menos 36
+// caracteres" (real ids are 36-char UUIDs). One bad melhor_envio_order_id
+// in our table (an empty string, a truncated value) used to blow up the
+// entire posted-status sync so nothing ever moved to Postados. Now empty
+// ids are dropped up front and any chunk that still fails is binary-split
+// to isolate and skip just the offending id(s), keeping the rest.
 export async function fetchTrackingBatch(config: AppConfig, orderIds: string[]): Promise<Record<string, MeTrackingEntry>> {
-  if (orderIds.length === 0) return {};
-  return withRetry(
-    () =>
-      meFetch<Record<string, MeTrackingEntry>>(config, "/me/shipment/tracking", {
-        method: "POST",
-        body: JSON.stringify({ orders: orderIds }),
-      }),
-    { label: "melhorenvio.fetchTracking", isRetryable },
-  );
+  const ids = [...new Set(orderIds.filter((id): id is string => typeof id === "string" && id.trim() !== ""))];
+  if (ids.length === 0) return {};
+  const result: Record<string, MeTrackingEntry> = {};
+  for (let i = 0; i < ids.length; i += TRACKING_BATCH_SIZE) {
+    await fetchTrackingChunk(config, ids.slice(i, i + TRACKING_BATCH_SIZE), result);
+  }
+  return result;
+}
+
+async function fetchTrackingChunk(
+  config: AppConfig,
+  chunk: string[],
+  result: Record<string, MeTrackingEntry>,
+): Promise<void> {
+  if (chunk.length === 0) return;
+  try {
+    const part = await withRetry(
+      () =>
+        meFetch<Record<string, MeTrackingEntry>>(config, "/me/shipment/tracking", {
+          method: "POST",
+          body: JSON.stringify({ orders: chunk }),
+        }),
+      { label: "melhorenvio.fetchTracking", isRetryable },
+    );
+    Object.assign(result, part);
+  } catch (error) {
+    if (chunk.length === 1) {
+      console.log(JSON.stringify({ orderId: chunk[0], err: String(error), level: "warn", msg: "melhorenvio_tracking_id_skipped" }));
+      return;
+    }
+    const mid = Math.ceil(chunk.length / 2);
+    await fetchTrackingChunk(config, chunk.slice(0, mid), result);
+    await fetchTrackingChunk(config, chunk.slice(mid), result);
+  }
 }
 
 // `tracking` (the raw carrier-native code) really can stay null for a long

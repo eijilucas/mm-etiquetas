@@ -1,6 +1,6 @@
 import "./test_env.ts";
 import { assertEquals } from "jsr:@std/assert@1";
-import { fetchTrackingByOrderId } from "../supabase/functions/_shared/melhorenvio.ts";
+import { fetchTrackingByOrderId, fetchTrackingBatch } from "../supabase/functions/_shared/melhorenvio.ts";
 import { loadConfig } from "../supabase/functions/_shared/config.ts";
 
 const config = loadConfig();
@@ -46,4 +46,27 @@ Deno.test("returns undefined when neither tracking field is set yet", async () =
       assertEquals(await fetchTrackingByOrderId(config, "me-1"), undefined);
     },
   );
+});
+
+// Regression: ME 422s the whole /me/shipment/tracking request if any single
+// id in the list is malformed. One bad melhor_envio_order_id used to kill
+// the entire posted-status sync. fetchTrackingBatch must drop empty ids and
+// isolate a still-failing id instead of losing every other order.
+Deno.test("fetchTrackingBatch drops empty ids and isolates one bad id, keeping the rest", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    const orders = JSON.parse(init?.body as string).orders as string[];
+    if (orders.includes("bad")) {
+      return jsonResponse({ message: "O campo orders.N deve ter pelo menos 36 caracteres." }, 422);
+    }
+    return jsonResponse(Object.fromEntries(orders.map((id) => [id, { id, status: "received" }])));
+  }) as typeof fetch;
+
+  try {
+    const result = await fetchTrackingBatch(config, ["good-1", "", "bad", "good-2", "  "]);
+    assertEquals(Object.keys(result).sort(), ["good-1", "good-2"]);
+    assertEquals(result["good-1"].status, "received");
+  } finally {
+    globalThis.fetch = original;
+  }
 });
