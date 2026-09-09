@@ -215,6 +215,11 @@ main {
   flex-wrap: wrap;
 }
 
+.diagnose-bar {
+  padding-top: 12px;
+  border-top: 1px solid var(--border-frame);
+}
+
 .selected-count {
   font-size: 13px;
   font-weight: 600;

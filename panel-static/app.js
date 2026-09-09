@@ -1410,6 +1410,60 @@ async function loadAll() {
   }
 }
 
+// For "pedido pago no Shopify mas some do painel" (ex: #3441/#3419,
+// 2026-09) — busca o pedido ao vivo no Shopify, confere se ja existe
+// alguma linha nossa pra ele (em qualquer status, nao so pending_approval)
+// e refaz o mesmo mapeamento que o webhook/reconciliacao usam, mostrando o
+// erro real se algum acontecer. Nunca escreve nada, so diagnostica.
+function formatDiagnoseResult(result) {
+  if (!result.foundInShopify) {
+    return "Esse pedido nao existe nessa loja no Shopify (confira o numero e a loja selecionada).";
+  }
+  const lines = [
+    `Shopify: pagamento "${result.shopify.financialStatus}", envio "${result.shopify.fulfillmentStatus ?? "nao processado"}", ${result.shopify.lineItemCount ?? "?"} item(ns).`,
+  ];
+  if (result.existingRows.length === 0) {
+    lines.push("Nao existe NENHUMA linha desse pedido no nosso sistema — nem webhook nem a reconciliacao conseguiram registra-lo ainda.");
+  } else {
+    for (const row of result.existingRows) {
+      const details = [`atualizado em ${formatDate(row.updated_at)}`];
+      if (row.last_error) details.push(`ultimo erro: ${friendlyErrorMessage(row.last_error)}`);
+      if (row.held_reason) details.push(`motivo do held: ${row.held_reason}`);
+      if (row.archived_by) details.push(`arquivado por: ${row.archived_by}`);
+      lines.push(`Ja existe no nosso sistema com status "${STATUS_LABELS[row.status] ?? row.status}" (${details.join(", ")}).`);
+    }
+  }
+  lines.push(
+    result.mapping.ok
+      ? "Refazendo o mapeamento agora: funciona sem erro — se ainda assim nao esta na fila, o proximo scan da reconciliacao (roda a cada 1min) deve resolver sozinho."
+      : `Refazendo o mapeamento agora: FALHA com o erro "${result.mapping.error}" — essa e a causa raiz de ele nao entrar na fila.`,
+  );
+  return lines.join("\n\n");
+}
+
+function setupDiagnose() {
+  const storeSelect = document.getElementById("diagnoseStoreSelect");
+  storeSelect.innerHTML = Object.entries(STORE_LABELS)
+    .map(([key, label]) => `<option value="${key}">${label}</option>`)
+    .join("");
+
+  document.getElementById("diagnoseBtn").addEventListener("click", async () => {
+    const storeKey = storeSelect.value;
+    const orderNumber = document.getElementById("diagnoseOrderNumber").value.trim();
+    if (!orderNumber) return;
+    const btn = document.getElementById("diagnoseBtn");
+    btn.disabled = true;
+    try {
+      const result = await api(`/diagnose-order?storeKey=${encodeURIComponent(storeKey)}&orderNumber=${encodeURIComponent(orderNumber)}`);
+      await showAlert(formatDiagnoseResult(result));
+    } catch (error) {
+      await showAlert(`Erro ao diagnosticar: ${friendlyErrorMessage(error.message)}`);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
 setupTabs();
 setupLogin();
 setupSyncNow();
@@ -1419,6 +1473,7 @@ setupManualTracking();
 setupCancelLabelDialog();
 setupStockConfirmDialog();
 setupToolbar();
+setupDiagnose();
 setInterval(() => {
   if (document.getElementById("mainContent").style.display !== "none") loadAll();
 }, 60000);

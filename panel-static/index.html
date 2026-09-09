@@ -76,6 +76,12 @@
           <button class="btn" id="refreshPendingBtn">Atualizar</button>
           <input type="text" class="text-input" id="pendingSearch" placeholder="Buscar por numero do pedido ou cliente" style="margin-left: auto;" />
         </div>
+        <div class="toolbar diagnose-bar">
+          <span class="text-label">Pedido pago no Shopify mas nao aparece em lugar nenhum?</span>
+          <select class="text-input" id="diagnoseStoreSelect"></select>
+          <input type="text" class="text-input" id="diagnoseOrderNumber" placeholder="Numero do pedido (ex: 3441)" style="max-width: 180px;" />
+          <button class="btn" id="diagnoseBtn">Diagnosticar</button>
+        </div>
         <div class="table-scroll">
         <table>
           <thead>

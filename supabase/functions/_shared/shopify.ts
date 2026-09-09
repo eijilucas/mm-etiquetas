@@ -412,6 +412,20 @@ export async function fetchOrderById(store: StoreConfig, shopifyOrderId: string)
   );
 }
 
+// Diagnostics-only lookup (see orders-api's /diagnose-order): finds an order
+// by its human-facing number (#3441) instead of Shopify's internal numeric
+// id, which nobody has memorized when chasing down a specific missing
+// order. `name` is an undocumented but well-known REST filter that does a
+// fuzzy/prefix match, so this always double-checks order_number for an
+// exact hit instead of trusting whatever comes back first.
+export async function fetchOrderByNumber(store: StoreConfig, orderNumber: string): Promise<ShopifyOrder | null> {
+  const data = await withRetry(
+    () => shopifyFetch<ShopifyOrdersListResponse>(store, `/orders.json?status=any&name=${encodeURIComponent(orderNumber)}`),
+    { label: "shopify.fetchOrderByNumber", isRetryable: isRetryableStatus },
+  );
+  return data.orders.find((o) => String(o.order_number) === orderNumber) ?? null;
+}
+
 interface FulfillmentCreateV2Response {
   data?: {
     fulfillmentCreateV2?: {

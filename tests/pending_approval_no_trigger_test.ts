@@ -899,6 +899,112 @@ Deno.test("GET /archived lists archived orders newest first", async () => {
   assertEquals(orders.map((o: { id: string }) => o.id), ["a2", "a1"]);
 });
 
+function withShopifyOrderLookupMock(order: unknown | null, fn: () => Promise<void>) {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("/admin/oauth/access_token")) {
+      return jsonResponse({ access_token: "shpat_test", scope: "read_orders", expires_in: 86399 });
+    }
+    if (url.includes("/orders.json") && url.includes("name=")) {
+      return jsonResponse({ orders: order ? [order] : [] });
+    }
+    if (url.includes("/graphql.json")) {
+      return jsonResponse({ data: { order: { currentTotalPriceSet: null, lineItems: { edges: [] } } } });
+    }
+    throw new Error(`Unexpected fetch call: ${url}`);
+  }) as typeof fetch;
+  return fn().finally(() => {
+    globalThis.fetch = original;
+  });
+}
+
+function diagnoseOrderReq(storeKey: string, orderNumber: string) {
+  return new Request(`http://localhost/functions/v1/orders-api/diagnose-order?storeKey=${storeKey}&orderNumber=${orderNumber}`, {
+    headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+  });
+}
+
+Deno.test("diagnose-order reports not found when the order doesn't exist on Shopify at all", async () => {
+  const fake = makeFakeSupabase();
+  let json: { foundInShopify: boolean };
+  await withShopifyOrderLookupMock(null, async () => {
+    // deno-lint-ignore no-explicit-any
+    const res = await handleOrdersApi(diagnoseOrderReq("test", "9999"), { config, supabase: fake as any });
+    assertEquals(res.status, 200);
+    json = await res.json();
+  });
+  assertEquals(json!.foundInShopify, false);
+});
+
+Deno.test("diagnose-order reports a real mapping failure instead of just 'missing' (reproduces #3441-style incidents)", async () => {
+  const fake = makeFakeSupabase();
+  const brokenOrder = {
+    id: 9201,
+    order_number: 3441,
+    admin_graphql_api_id: "gid://shopify/Order/9201",
+    financial_status: "paid",
+    fulfillment_status: null,
+    currency: "BRL",
+    total_price: "199.90",
+    // line_items intentionally missing, same as the reconciliation alert test
+  };
+
+  let json: { foundInShopify: boolean; existingRows: unknown[]; mapping: { ok: boolean; error?: string } };
+  await withShopifyOrderLookupMock(brokenOrder, async () => {
+    // deno-lint-ignore no-explicit-any
+    const res = await handleOrdersApi(diagnoseOrderReq("test", "3441"), { config, supabase: fake as any });
+    assertEquals(res.status, 200);
+    json = await res.json();
+  });
+
+  assertEquals(json!.foundInShopify, true);
+  assertEquals(json!.existingRows, []);
+  assertEquals(json!.mapping.ok, false);
+  assertEquals(json!.mapping.error!.includes("Cannot read properties of undefined"), true);
+});
+
+Deno.test("diagnose-order surfaces an existing row even when it isn't pending_approval, so 'missing' isn't confused with 'hiding elsewhere'", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push({
+    id: "row-1",
+    store_key: "test",
+    shopify_order_id: "9202",
+    status: "held",
+    held_reason: "CEP invalido",
+    updated_at: "2026-09-08T10:00:00Z",
+  });
+  const goodOrder = {
+    id: 9202,
+    order_number: 3419,
+    admin_graphql_api_id: "gid://shopify/Order/9202",
+    financial_status: "paid",
+    fulfillment_status: null,
+    currency: "BRL",
+    total_price: "99.90",
+    line_items: [{ id: 1, title: "Bone", variant_title: null, sku: "BON-1", quantity: 1, price: "99.90", grams: 150 }],
+  };
+
+  let json: { existingRows: { status: string; held_reason: string }[] };
+  await withShopifyOrderLookupMock(goodOrder, async () => {
+    // deno-lint-ignore no-explicit-any
+    const res = await handleOrdersApi(diagnoseOrderReq("test", "3419"), { config, supabase: fake as any });
+    assertEquals(res.status, 200);
+    json = await res.json();
+  });
+
+  assertEquals(json!.existingRows.length, 1);
+  assertEquals(json!.existingRows[0].status, "held");
+  assertEquals(json!.existingRows[0].held_reason, "CEP invalido");
+});
+
+Deno.test("diagnose-order rejects an unknown store key", async () => {
+  const fake = makeFakeSupabase();
+  // deno-lint-ignore no-explicit-any
+  const res = await handleOrdersApi(diagnoseOrderReq("nao-existe", "3441"), { config, supabase: fake as any });
+  assertEquals(res.status, 400);
+});
+
 Deno.test("kpi-counts returns head:true counts per bucket, not full rows", async () => {
   const fake = makeFakeSupabase();
   fake.table("orders_shipping").push(

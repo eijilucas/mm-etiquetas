@@ -6,7 +6,8 @@ import type { OrderShippingRow, ShippingStatus } from "../_shared/db.ts";
 import { runShippingPipeline, cancelOrderLabel, manualTrackingSync, checkApprovalIssues } from "../_shared/pipeline.ts";
 import { runReconciliation, checkStuckOrders, syncPostedOrders, retryStalledTracking } from "../_shared/reconciliation.ts";
 import { fetchAccountBalance, fetchDeclarationPdfUrl, fetchTrackingBatch } from "../_shared/melhorenvio.ts";
-import { fetchPaidFulfilledOrders, mapShopifyOrderToCandidate, latestFulfillmentTracking } from "../_shared/shopify.ts";
+import { fetchPaidFulfilledOrders, fetchOrderByNumber, mapShopifyOrderToCandidate, latestFulfillmentTracking } from "../_shared/shopify.ts";
+import { getStoreByKey } from "../_shared/config.ts";
 import { reportExternalStageChangeForIds } from "../_shared/integrationCallback.ts";
 import { sleep } from "../_shared/retry.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
@@ -172,6 +173,56 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
         .order("archived_at", { ascending: false });
       if (error) throw error;
       return json({ orders: (data as OrderShippingRow[]).map(toApiShape) });
+    }
+
+    // Diagnoses "this order is paid on Shopify but missing from every panel
+    // tab" (e.g. #3441/#3419, 2026-09) without needing DB/log access: fetches
+    // the order live from Shopify by its human-facing number, checks whether
+    // any row already exists for it (any status, not just pending_approval —
+    // it could be sitting archived/held/external and just look "missing"),
+    // and replays the exact same mapping reconciliation/the webhook use so a
+    // real mapping failure shows its real error instead of a guess. Never
+    // writes anything.
+    if (req.method === "GET" && segments[0] === "diagnose-order") {
+      const url = new URL(req.url);
+      const storeKey = url.searchParams.get("storeKey") ?? "";
+      const orderNumber = url.searchParams.get("orderNumber") ?? "";
+      const store = getStoreByKey(config, storeKey);
+      if (!store) return json({ error: `unknown_store_key: ${storeKey}` }, 400);
+      if (!orderNumber) return json({ error: "orderNumber_required" }, 400);
+
+      const shopifyOrder = await fetchOrderByNumber(store, orderNumber);
+      if (!shopifyOrder) {
+        return json({ foundInShopify: false });
+      }
+
+      const { data: existingRows, error: findError } = await supabase
+        .from("orders_shipping")
+        .select("id, status, last_error, held_reason, archived_by, updated_at")
+        .eq("store_key", storeKey)
+        .eq("shopify_order_id", String(shopifyOrder.id));
+      if (findError) throw findError;
+
+      let mapping: { ok: true } | { ok: false; error: string };
+      try {
+        await mapShopifyOrderToCandidate(shopifyOrder, store);
+        mapping = { ok: true };
+      } catch (error) {
+        mapping = { ok: false, error: String(error) };
+      }
+
+      return json({
+        foundInShopify: true,
+        shopify: {
+          id: shopifyOrder.id,
+          orderNumber: shopifyOrder.order_number,
+          financialStatus: shopifyOrder.financial_status,
+          fulfillmentStatus: shopifyOrder.fulfillment_status,
+          lineItemCount: shopifyOrder.line_items?.length ?? null,
+        },
+        existingRows: existingRows ?? [],
+        mapping,
+      });
     }
 
     // Read-only history: orders fulfilled entirely outside this system (see
