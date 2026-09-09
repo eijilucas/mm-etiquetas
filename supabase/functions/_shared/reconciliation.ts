@@ -75,6 +75,16 @@ export async function runReconciliation(
           { storeKey: store.key, shopifyOrderId: order.id, shopifyOrderNumber: order.order_number, err: String(error), level: "error" },
           "reconciliation_order_failed",
         );
+        // Sem isso, um pedido pago que falha em entrar na fila fica só numa
+        // linha de log que ninguém olha — foi exatamente esse silêncio que
+        // fez #3441/#3419 só aparecerem no dia de embalar, já atrasados.
+        // Dispara toda vez que o scan (a cada 15min) ainda encontra o pedido
+        // faltando -- mesma lógica de re-alerta do checkStuckOrders logo
+        // abaixo, então some sozinho assim que o pedido entrar na fila.
+        await sendAlert(
+          config,
+          `[mm-etiquetas] Pedido ${order.order_number ?? order.id} (${store.key}) esta pago no Shopify mas nao entrou na fila de aprovacao: ${String(error)}`,
+        );
       }
     }
     scanned += orders.length;
