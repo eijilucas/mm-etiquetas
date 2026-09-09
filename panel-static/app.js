@@ -947,6 +947,7 @@ function renderManualTrackingRows() {
       <td>${orderRefHtml(order)}</td>
       <td>${storeCell(order)}</td>
       <td>${order.customerName ?? "-"}</td>
+      <td class="col-items items-list">${itemsSummaryExternalOnly(order)}</td>
       <td>${pill(order.status)}</td>
       <td>${codeCell}</td>
       <td>
