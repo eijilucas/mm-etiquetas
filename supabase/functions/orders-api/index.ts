@@ -160,15 +160,16 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
 
     // The "Pedidos com erros / removidos" tab: orders that failed (status
     // "failed" — pulled out of Liberados so a broken order never sits next
-    // to a healthy one) plus orders removed via /archive. One list, most
-    // recent activity first. select("*") because this set is small and
-    // bounded (unlike /processing), and the failed-order actions need the
-    // full row.
+    // to a healthy one), orders parked in "held" (a Cancelar lands here; the
+    // dedicated "Em espera" tab was removed), and orders removed via
+    // /archive. One list, most recent activity first. select("*") because
+    // this set is small and bounded (unlike /processing), and the per-row
+    // actions need the full row.
     if (req.method === "GET" && segments[0] === "archived") {
       const { data, error } = await supabase
         .from("orders_shipping")
         .select("*")
-        .in("status", ["failed", "archived"])
+        .in("status", ["failed", "held", "archived"])
         .order("updated_at", { ascending: false });
       if (error) throw error;
       return json({ orders: (data as OrderShippingRow[]).map(toApiShape) });

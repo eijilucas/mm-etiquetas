@@ -879,13 +879,14 @@ Deno.test("refuses to restore an order that isn't archived", async () => {
   assertEquals(fake.table("orders_shipping")[0].status, "failed");
 });
 
-Deno.test("GET /archived returns both failed and removed orders, newest activity first", async () => {
+Deno.test("GET /archived returns failed, held and removed orders, newest activity first", async () => {
   const fake = makeFakeSupabase();
   fake.table("orders_shipping").push(
     { id: "a1", store_key: "external", shopify_order_id: "7105", status: "archived", archived_at: "2026-09-08T09:00:00Z", archived_by: "vitor@m3ntalmadness.com", updated_at: "2026-09-08T09:00:00Z" },
     { id: "a2", store_key: "external", shopify_order_id: "7106", status: "archived", archived_at: "2026-09-08T12:00:00Z", archived_by: "vitor@m3ntalmadness.com", updated_at: "2026-09-08T12:00:00Z" },
     { id: "a3", store_key: "test", shopify_order_id: "7107", status: "failed", last_error: "erro qualquer", updated_at: "2026-09-08T15:00:00Z" },
     { id: "a4", store_key: "test", shopify_order_id: "7108", status: "tracking_ready", updated_at: "2026-09-08T20:00:00Z" },
+    { id: "a5", store_key: "test", shopify_order_id: "7109", status: "held", held_reason: "cancelado", updated_at: "2026-09-08T18:00:00Z" },
   );
 
   const req = new Request("http://localhost/functions/v1/orders-api/archived", {
@@ -897,8 +898,8 @@ Deno.test("GET /archived returns both failed and removed orders, newest activity
 
   assertEquals(res.status, 200);
   const { orders } = await res.json();
-  // a4 (tracking_ready) excluded; failed + archived only, updated_at desc.
-  assertEquals(orders.map((o: { id: string }) => o.id), ["a3", "a2", "a1"]);
+  // a4 (tracking_ready) excluded; failed + held + archived, updated_at desc.
+  assertEquals(orders.map((o: { id: string }) => o.id), ["a5", "a3", "a2", "a1"]);
 });
 
 Deno.test("back-to-queue sends a failed order (no shipping bought) back to pending_approval", async () => {

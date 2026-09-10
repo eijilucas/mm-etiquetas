@@ -370,7 +370,6 @@ async function loadPending() {
 function updateBulkButtons() {
   const count = selectedPending.size;
   document.getElementById("approveBtn").disabled = count === 0;
-  document.getElementById("holdBtn").disabled = count === 0;
   const counter = document.getElementById("pendingSelectedCount");
   counter.textContent = count === 1 ? "1 selecionado" : `${count} selecionados`;
   counter.classList.toggle("has-selection", count > 0);
@@ -715,71 +714,6 @@ async function loadProcessing() {
   return orders;
 }
 
-let heldOrders = [];
-
-async function loadHeld() {
-  const { orders } = await api("/held");
-  heldOrders = orders;
-  renderHeldRows();
-  return orders;
-}
-
-function renderHeldRows() {
-  const tbody = document.getElementById("heldTableBody");
-  const empty = document.getElementById("heldEmpty");
-  const orders = filterBySearch(heldOrders, "heldSearch");
-  tbody.innerHTML = "";
-  empty.style.display = orders.length === 0 ? "block" : "none";
-
-  for (const order of orders) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${orderRefHtml(order)}</td>
-      <td>${storeCell(order)}</td>
-      <td>${order.customerName ?? "-"}</td>
-      <td>${order.heldReason ?? "-"}</td>
-      <td>${formatDate(order.heldAt)}</td>
-      <td>
-        <button class="btn" data-revert="${order.id}">Reverter para pendente</button>
-        <button class="btn danger" data-archive="${order.id}">Remover</button>
-      </td>
-    `;
-    tbody.appendChild(tr);
-  }
-
-  tbody.querySelectorAll("[data-revert]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      try {
-        await api("/revert", { method: "POST", body: JSON.stringify({ ids: [btn.dataset.revert] }) });
-        await loadHeld();
-        await refreshKpis();
-      } catch (error) {
-        await showAlert(`Erro ao reverter: ${friendlyErrorMessage(error.message)}`);
-        btn.disabled = false;
-      }
-    });
-  });
-
-  // Doesn't delete the row (history stays in the DB), just moves it to a
-  // status no tab queries for — see the /archive route.
-  tbody.querySelectorAll("[data-archive]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const id = btn.dataset.archive;
-      if (!(await showConfirm("Remover esse pedido do painel? Ele para de aparecer em qualquer aba (o historico continua salvo no banco)."))) return;
-      btn.disabled = true;
-      try {
-        await api(`/${id}/archive`, { method: "POST" });
-        await loadHeld();
-        await refreshKpis();
-      } catch (error) {
-        await showAlert(`Erro ao remover: ${friendlyErrorMessage(error.message)}`);
-        btn.disabled = false;
-      }
-    });
-  });
-}
-
 let archivedOrders = [];
 
 async function loadArchived() {
@@ -789,11 +723,12 @@ async function loadArchived() {
   return orders;
 }
 
-// Two kinds of row share this tab:
-//  - status "failed": pedido que deu erro. Ações: voltar pra fila de
-//    aprovação (só se ainda não comprou frete), reprocessar, cancelar,
-//    remover.
-//  - status "archived": pedido removido do painel. Ação: restaurar.
+// Três tipos de linha nessa aba:
+//  - "failed": pedido que deu erro. Ações: voltar pra fila (só se ainda não
+//    comprou frete), reprocessar, cancelar, remover.
+//  - "held": pedido em espera (sobrou de um Cancelar, ou de antes de a aba
+//    "Em espera" ser removida). Ações: voltar pra fila, remover.
+//  - "archived": pedido removido do painel. Ação: restaurar.
 function renderArchivedRows() {
   const tbody = document.getElementById("archivedTableBody");
   const empty = document.getElementById("archivedEmpty");
@@ -803,22 +738,36 @@ function renderArchivedRows() {
 
   for (const order of orders) {
     const removed = order.status === "archived";
-    const when = removed ? order.archivedAt : order.updatedAt;
-    const actions = removed
-      ? `<button class="btn" data-restore="${order.id}">Restaurar</button>`
-      : `
+    const held = order.status === "held";
+    const when = removed ? order.archivedAt : held ? order.heldAt : order.updatedAt;
+    let actions;
+    if (removed) {
+      actions = `<button class="btn" data-restore="${order.id}">Restaurar</button>`;
+    } else if (held) {
+      actions = `
+        <button class="btn" data-revert-held="${order.id}">Voltar p/ fila</button>
+        <button class="btn danger" data-archive-err="${order.id}">Remover</button>
+      `;
+    } else {
+      actions = `
         ${order.melhorEnvioOrderId ? "" : `<button class="btn" data-back-to-queue="${order.id}">Voltar p/ fila</button>`}
         <button class="btn" data-reprocess-err="${order.id}">Reprocessar</button>
         <button class="btn danger" data-cancel-err="${order.id}">Cancelar</button>
         <button class="btn danger" data-archive-err="${order.id}">Remover</button>
       `;
+    }
+    const situacaoHtml = removed
+      ? '<span class="pill">Removido</span>'
+      : held
+        ? '<span class="pill">Em espera</span>'
+        : pill("failed");
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${orderRefHtml(order)}</td>
       <td>${storeCell(order)}</td>
       <td>${order.customerName ?? "-"}</td>
       <td class="col-items items-list">${itemsSummaryExternalOnly(order)}</td>
-      <td>${removed ? '<span class="pill">Removido</span>' : pill("failed")}</td>
+      <td>${situacaoHtml}</td>
       <td class="error-text" title="${escapeAttr(order.lastError)}">${order.heldReason ?? (friendlyErrorMessage(order.lastError) || "-")}</td>
       <td class="nowrap">${formatDate(when)}</td>
       <td>${removed ? (order.archivedBy ?? "-") : "-"}</td>
@@ -826,6 +775,21 @@ function renderArchivedRows() {
     `;
     tbody.appendChild(tr);
   }
+
+  tbody.querySelectorAll("[data-revert-held]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!(await showConfirm("Mandar esse pedido de volta pra Fila de aprovacao?"))) return;
+      btn.disabled = true;
+      try {
+        await api("/revert", { method: "POST", body: JSON.stringify({ ids: [btn.dataset.revertHeld] }) });
+        await loadArchived();
+        await refreshKpis();
+      } catch (error) {
+        await showAlert(`Erro ao voltar pra fila: ${friendlyErrorMessage(error.message)}`);
+        btn.disabled = false;
+      }
+    });
+  });
 
   // Where a restored order lands (held / aguardando envio / externo / falhou)
   // is inferred on the backend from fields /archive never touched — see the
@@ -888,60 +852,6 @@ function renderArchivedRows() {
       try {
         await api(`/${btn.dataset.archiveErr}/archive`, { method: "POST" });
         await loadArchived();
-        await refreshKpis();
-      } catch (error) {
-        await showAlert(`Erro ao remover: ${friendlyErrorMessage(error.message)}`);
-        btn.disabled = false;
-      }
-    });
-  });
-}
-
-let externalOrders = [];
-
-// Read-only history: orders fulfilled entirely outside this system (see
-// shopify-webhook's "external" recording) — no action here ever buys
-// shipping or contacts the customer, so there's nothing to wire up beyond
-// listing and searching.
-async function loadExternal() {
-  const { orders } = await api("/external");
-  externalOrders = orders;
-  renderExternalRows();
-  return orders;
-}
-
-function renderExternalRows() {
-  const tbody = document.getElementById("externalTableBody");
-  const empty = document.getElementById("externalEmpty");
-  const orders = filterBySearch(externalOrders, "externalSearch");
-  tbody.innerHTML = "";
-  empty.style.display = orders.length === 0 ? "block" : "none";
-
-  for (const order of orders) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${orderRefHtml(order)}</td>
-      <td>${storeCell(order)}</td>
-      <td>${order.customerName ?? "-"}</td>
-      <td>${formatCurrency(order.totalPrice, order.currency)}</td>
-      <td>${order.trackingCode ?? "-"}</td>
-      <td>${order.trackingCompany ?? "-"}</td>
-      <td>${formatDate(order.paidAt)}</td>
-      <td class="col-action"><button class="btn danger" data-archive-external="${order.id}">Remover</button></td>
-    `;
-    tbody.appendChild(tr);
-  }
-
-  // "Remover" só tira do painel (vai pra aba "Pedidos com erros / removidos",
-  // de onde dá pra restaurar) — o histórico continua no banco, nada é
-  // cancelado nem estornado.
-  tbody.querySelectorAll("[data-archive-external]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      if (!(await showConfirm("Remover esse pedido do painel? Ele sai da lista de processados por fora (o historico continua salvo no banco)."))) return;
-      btn.disabled = true;
-      try {
-        await api(`/${btn.dataset.archiveExternal}/archive`, { method: "POST" });
-        await loadExternal();
         await refreshKpis();
       } catch (error) {
         await showAlert(`Erro ao remover: ${friendlyErrorMessage(error.message)}`);
@@ -1207,9 +1117,7 @@ function setupTabs() {
       // never shows stale/empty data on first click.
       if (btn.dataset.tab === "pending") loadPending();
       if (btn.dataset.tab === "released" || btn.dataset.tab === "posted") loadProcessing();
-      if (btn.dataset.tab === "held") loadHeld();
       if (btn.dataset.tab === "manual-tracking") loadManualTracking();
-      if (btn.dataset.tab === "external") loadExternal();
       if (btn.dataset.tab === "archived") loadArchived();
     });
   });
@@ -1278,36 +1186,9 @@ function setupSyncNow() {
   });
 }
 
-function setupHoldDialog() {
-  const dialog = document.getElementById("holdDialog");
-  const reasonInput = document.getElementById("holdReasonInput");
-  document.getElementById("holdBtn").addEventListener("click", () => {
-    reasonInput.value = "";
-    dialog.showModal();
-  });
-  document.getElementById("holdCancelBtn").addEventListener("click", () => dialog.close());
-  document.getElementById("holdConfirmBtn").addEventListener("click", async () => {
-    const reason = reasonInput.value.trim();
-    if (!reason) {
-      await showAlert("Informe o motivo.");
-      return;
-    }
-    try {
-      await api("/hold", {
-        method: "POST",
-        body: JSON.stringify({ ids: Array.from(selectedPending), reason }),
-      });
-      dialog.close();
-      await loadPending();
-      await refreshKpis();
-    } catch (error) {
-      await showAlert(`Erro ao segurar pedidos: ${friendlyErrorMessage(error.message)}`);
-    }
-  });
-}
-
 // Undoes an already-purchased label (Melhor Envio refunds the wallet) and
-// parks the order in "held" — see cancelOrderLabel in the backend.
+// parks the order in "held" — see cancelOrderLabel in the backend. Aparece
+// na aba "Pedidos com erros / removidos".
 function setupCancelLabelDialog() {
   const dialog = document.getElementById("cancelLabelDialog");
   document.getElementById("cancelLabelCloseBtn").addEventListener("click", () => dialog.close());
@@ -1345,8 +1226,6 @@ function setupToolbar() {
   document.getElementById("pendingSearch").addEventListener("input", renderPendingRows);
   document.getElementById("releasedSearch").addEventListener("input", renderReleasedRows);
   document.getElementById("postedSearch").addEventListener("input", renderPostedRows);
-  document.getElementById("heldSearch").addEventListener("input", renderHeldRows);
-  document.getElementById("externalSearch").addEventListener("input", renderExternalRows);
   document.getElementById("archivedSearch").addEventListener("input", renderArchivedRows);
 
   document.getElementById("selectAllReleasedBtn").addEventListener("click", () => {
@@ -1444,26 +1323,7 @@ function setupToolbar() {
   document.getElementById("refreshPendingBtn").addEventListener("click", loadPending);
   document.getElementById("refreshReleasedBtn").addEventListener("click", loadProcessing);
   document.getElementById("refreshPostedBtn").addEventListener("click", loadProcessing);
-  document.getElementById("refreshHeldBtn").addEventListener("click", loadHeld);
-  document.getElementById("refreshExternalBtn").addEventListener("click", loadExternal);
   document.getElementById("refreshArchivedBtn").addEventListener("click", loadArchived);
-
-  document.getElementById("backfillExternalBtn").addEventListener("click", async (event) => {
-    const btn = event.currentTarget;
-    btn.disabled = true;
-    const originalText = btn.textContent;
-    btn.textContent = "Buscando...";
-    try {
-      const { recorded, skipped } = await api("/external/backfill", { method: "POST", body: JSON.stringify({ days: 90 }) });
-      await loadExternal();
-      await showAlert(`${recorded} pedido(s) adicionado(s) ao historico. ${skipped} ja estavam registrados ou em andamento no painel.`);
-    } catch (error) {
-      await showAlert(`Erro ao buscar historico: ${friendlyErrorMessage(error.message)}`);
-    } finally {
-      btn.disabled = false;
-      btn.textContent = originalText;
-    }
-  });
 }
 
 // Extra "does the packer actually have stock" gate before etiquetas are
@@ -1486,7 +1346,7 @@ function setupStockConfirmDialog() {
 
 // KPI counts are cheap (head:true, see refreshKpis) so they're fetched every
 // tick regardless of which tab is open. Every full table (Fila, Liberados/
-// Postados, Held, Rastreio, external) is only fetched while its own tab is
+// Postados, Rastreio, erros/removidos) is only fetched while its own tab is
 // the one showing — no point re-downloading a table nobody is looking at
 // every minute.
 async function loadAll() {
@@ -1495,8 +1355,6 @@ async function loadAll() {
     const tasks = [api("/kpi-counts")];
     if (activeTab === "pending") tasks.push(loadPending());
     if (activeTab === "released" || activeTab === "posted") tasks.push(loadProcessing());
-    if (activeTab === "held") tasks.push(loadHeld());
-    if (activeTab === "external") tasks.push(loadExternal());
     if (activeTab === "manual-tracking") tasks.push(loadManualTracking());
     if (activeTab === "archived") tasks.push(loadArchived());
     const [counts] = await Promise.all(tasks);
@@ -1563,7 +1421,6 @@ function setupDiagnose() {
 setupTabs();
 setupLogin();
 setupSyncNow();
-setupHoldDialog();
 setupBulkPrint();
 setupManualTracking();
 setupCancelLabelDialog();
