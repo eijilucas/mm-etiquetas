@@ -21,6 +21,7 @@ import {
 import type { MeCartRequest } from "./melhorenvio.ts";
 import { reportLabelGenerated, reportLabelCancelled, reportExternalLabelGenerated, reportExternalLabelCancelled } from "./estoque.ts";
 import { sendShippingCallback, reportExternalStageChange } from "./integrationCallback.ts";
+import { reportShippingCost } from "./lucroLiquidoCallback.ts";
 
 function log(fields: Record<string, unknown>, msg: string) {
   console.log(JSON.stringify({ msg, ...fields }));
@@ -397,6 +398,11 @@ export async function runShippingPipeline(
   try {
     const finalOrder = await fetchOrder(supabase, orderShippingId);
     await reportExternalStageChange(config, finalOrder);
+    // Empurra o custo real da etiqueta pro mental-lucro-liquido. No-op pra
+    // pedido externo e pra pedido sem shipping_price (ver reportShippingCost).
+    // Idempotente do lado de lá (upsert por shopify_order_id), então rodar
+    // isso de novo a cada reprocess/retry é inofensivo.
+    await reportShippingCost(config, finalOrder);
   } catch (err) {
     log({ orderShippingId, err: String(err), level: "error" }, "pipeline_stage_report_failed");
   }

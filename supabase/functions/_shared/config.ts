@@ -165,6 +165,18 @@ export function loadConfig() {
       url: optional("VENDAS_EXTERNAS_FUNCTIONS_URL"),
       secret: optional("INTEGRATION_CALLBACK_SECRET"),
     },
+
+    // Callback assinado de saída pro mental-lucro-liquido (shipping-cost-
+    // callback) — empurra o custo real da etiqueta (shipping_price) quando
+    // ela fecha, pra ele calcular o resultado do frete por pedido. Secret
+    // dedicado (LUCRO_LIQUIDO_CALLBACK_SECRET); a function de lá vai com
+    // verify_jwt = false e o HMAC (X-Signature) é a autenticação. Ambos
+    // opcionais: sem eles, o callback é no-op silencioso — fica dormente
+    // até ser configurado, sem quebrar o pipeline de etiqueta.
+    lucroLiquidoCallback: {
+      url: optional("LUCRO_LIQUIDO_FUNCTIONS_URL"),
+      secret: optional("LUCRO_LIQUIDO_CALLBACK_SECRET"),
+    },
   };
 }
 
