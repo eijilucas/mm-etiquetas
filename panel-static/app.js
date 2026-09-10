@@ -435,7 +435,9 @@ let releasedStoreFilter = "all";
 // dead (0) pill.
 function renderReleasedStoreFilter() {
   const container = document.getElementById("releasedStoreFilter");
-  const unposted = processingOrders.filter((order) => !order.postedAt);
+  // "failed" saiu da Liberados (agora vive na aba "Pedidos com erros /
+  // removidos"), então não conta aqui também.
+  const unposted = processingOrders.filter((order) => !order.postedAt && order.status !== "failed");
   const keys = Array.from(new Set(unposted.map((order) => order.storeKey))).sort((a, b) =>
     storeLabel(a).localeCompare(storeLabel(b)),
   );
@@ -516,7 +518,9 @@ function renderReleasedRows() {
   const empty = document.getElementById("releasedEmpty");
   // Pedido mais recente em primeiro: ordena pela data do pedido na Shopify
   // (paid_at). Cai pra updated_at só se não houver paid_at (linha antiga).
-  const unposted = processingOrders.filter((order) => !order.postedAt);
+  // "failed" não aparece aqui — pedido com erro fica na aba dedicada, pra
+  // não se misturar com os que deram certo.
+  const unposted = processingOrders.filter((order) => !order.postedAt && order.status !== "failed");
   const storeFiltered = releasedStoreFilter === "all" ? unposted : unposted.filter((order) => order.storeKey === releasedStoreFilter);
   const orders = filterBySearch(storeFiltered, "releasedSearch").sort(
     (a, b) => new Date(b.paidAt ?? b.updatedAt).getTime() - new Date(a.paidAt ?? a.updatedAt).getTime(),
@@ -682,7 +686,7 @@ async function loadProcessing() {
   }
   updateReleasedBulkButtons();
 
-  if (releasedStoreFilter !== "all" && !orders.some((order) => !order.postedAt && order.storeKey === releasedStoreFilter)) {
+  if (releasedStoreFilter !== "all" && !orders.some((order) => !order.postedAt && order.status !== "failed" && order.storeKey === releasedStoreFilter)) {
     releasedStoreFilter = "all";
   }
   renderReleasedStoreFilter();
@@ -785,6 +789,11 @@ async function loadArchived() {
   return orders;
 }
 
+// Two kinds of row share this tab:
+//  - status "failed": pedido que deu erro. Ações: voltar pra fila de
+//    aprovação (só se ainda não comprou frete), reprocessar, cancelar,
+//    remover.
+//  - status "archived": pedido removido do painel. Ação: restaurar.
 function renderArchivedRows() {
   const tbody = document.getElementById("archivedTableBody");
   const empty = document.getElementById("archivedEmpty");
@@ -793,22 +802,34 @@ function renderArchivedRows() {
   empty.style.display = orders.length === 0 ? "block" : "none";
 
   for (const order of orders) {
+    const removed = order.status === "archived";
+    const when = removed ? order.archivedAt : order.updatedAt;
+    const actions = removed
+      ? `<button class="btn" data-restore="${order.id}">Restaurar</button>`
+      : `
+        ${order.melhorEnvioOrderId ? "" : `<button class="btn" data-back-to-queue="${order.id}">Voltar p/ fila</button>`}
+        <button class="btn" data-reprocess-err="${order.id}">Reprocessar</button>
+        <button class="btn danger" data-cancel-err="${order.id}">Cancelar</button>
+        <button class="btn danger" data-archive-err="${order.id}">Remover</button>
+      `;
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${orderRefHtml(order)}</td>
       <td>${storeCell(order)}</td>
       <td>${order.customerName ?? "-"}</td>
       <td class="col-items items-list">${itemsSummaryExternalOnly(order)}</td>
+      <td>${removed ? '<span class="pill">Removido</span>' : pill("failed")}</td>
       <td class="error-text" title="${escapeAttr(order.lastError)}">${order.heldReason ?? (friendlyErrorMessage(order.lastError) || "-")}</td>
-      <td class="nowrap">${formatDate(order.archivedAt)}</td>
-      <td>${order.archivedBy ?? "-"}</td>
-      <td><button class="btn" data-restore="${order.id}">Restaurar</button></td>
+      <td class="nowrap">${formatDate(when)}</td>
+      <td>${removed ? (order.archivedBy ?? "-") : "-"}</td>
+      <td class="col-action">${actions}</td>
     `;
     tbody.appendChild(tr);
   }
 
-  // Where it lands (held / aguardando envio / falhou) is inferred on the
-  // backend from fields /archive never touched — see the /restore route.
+  // Where a restored order lands (held / aguardando envio / externo / falhou)
+  // is inferred on the backend from fields /archive never touched — see the
+  // /restore route.
   tbody.querySelectorAll("[data-restore]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       btn.disabled = true;
@@ -818,6 +839,58 @@ function renderArchivedRows() {
         await refreshKpis();
       } catch (error) {
         await showAlert(`Erro ao restaurar: ${friendlyErrorMessage(error.message)}`);
+        btn.disabled = false;
+      }
+    });
+  });
+
+  tbody.querySelectorAll("[data-back-to-queue]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!(await showConfirm("Mandar esse pedido de volta pra Fila de aprovacao? Ele sai daqui e volta a esperar aprovacao manual."))) return;
+      btn.disabled = true;
+      try {
+        await api(`/${btn.dataset.backToQueue}/back-to-queue`, { method: "POST" });
+        await loadArchived();
+        await refreshKpis();
+      } catch (error) {
+        await showAlert(`Erro ao voltar pra fila: ${friendlyErrorMessage(error.message)}`);
+        btn.disabled = false;
+      }
+    });
+  });
+
+  tbody.querySelectorAll("[data-reprocess-err]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await api(`/${btn.dataset.reprocessErr}/reprocess`, { method: "POST" });
+        await loadArchived();
+        await refreshKpis();
+      } catch (error) {
+        await showAlert(`Erro ao reprocessar: ${friendlyErrorMessage(error.message)}`);
+        btn.disabled = false;
+      }
+    });
+  });
+
+  tbody.querySelectorAll("[data-cancel-err]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      cancelTargetId = btn.dataset.cancelErr;
+      document.getElementById("cancelLabelReasonInput").value = "";
+      document.getElementById("cancelLabelDialog").showModal();
+    });
+  });
+
+  tbody.querySelectorAll("[data-archive-err]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!(await showConfirm("Remover esse pedido do painel? Ele para de aparecer nas outras abas (o historico continua salvo no banco). Nao cancela etiqueta nem estorna nada."))) return;
+      btn.disabled = true;
+      try {
+        await api(`/${btn.dataset.archiveErr}/archive`, { method: "POST" });
+        await loadArchived();
+        await refreshKpis();
+      } catch (error) {
+        await showAlert(`Erro ao remover: ${friendlyErrorMessage(error.message)}`);
         btn.disabled = false;
       }
     });
@@ -854,9 +927,28 @@ function renderExternalRows() {
       <td>${order.trackingCode ?? "-"}</td>
       <td>${order.trackingCompany ?? "-"}</td>
       <td>${formatDate(order.paidAt)}</td>
+      <td class="col-action"><button class="btn danger" data-archive-external="${order.id}">Remover</button></td>
     `;
     tbody.appendChild(tr);
   }
+
+  // "Remover" só tira do painel (vai pra aba "Pedidos com erros / removidos",
+  // de onde dá pra restaurar) — o histórico continua no banco, nada é
+  // cancelado nem estornado.
+  tbody.querySelectorAll("[data-archive-external]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!(await showConfirm("Remover esse pedido do painel? Ele sai da lista de processados por fora (o historico continua salvo no banco)."))) return;
+      btn.disabled = true;
+      try {
+        await api(`/${btn.dataset.archiveExternal}/archive`, { method: "POST" });
+        await loadExternal();
+        await refreshKpis();
+      } catch (error) {
+        await showAlert(`Erro ao remover: ${friendlyErrorMessage(error.message)}`);
+        btn.disabled = false;
+      }
+    });
+  });
 }
 
 // Candidates for the Rastreio manual tab, three flavors:
@@ -1228,7 +1320,11 @@ function setupCancelLabelDialog() {
     try {
       await api(`/${cancelTargetId}/cancel`, { method: "POST", body: JSON.stringify({ reason }) });
       dialog.close();
+      // Cancelar dispara tanto da Liberados quanto da aba de erros/removidos
+      // — recarrega as duas, já que o pedido some de onde estava e vai pra
+      // "em espera".
       await loadProcessing();
+      await loadArchived();
       await refreshKpis();
     } catch (error) {
       await showAlert(`Erro ao cancelar etiqueta: ${friendlyErrorMessage(error.message)}`);

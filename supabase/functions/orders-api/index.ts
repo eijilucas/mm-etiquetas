@@ -158,19 +158,18 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
       return json({ orders: (data as OrderShippingRow[]).map(toApiShape) });
     }
 
-    // Orders dismissed via /archive — kept for the rare "shouldn't have
-    // archived that" case, so a person can find and undo it instead of it
-    // being gone from the panel for good. items is included: same reasoning
-    // as /processing, lets Restaurar-adjacent review show the piece for
-    // Vendas Externas orders.
+    // The "Pedidos com erros / removidos" tab: orders that failed (status
+    // "failed" — pulled out of Liberados so a broken order never sits next
+    // to a healthy one) plus orders removed via /archive. One list, most
+    // recent activity first. select("*") because this set is small and
+    // bounded (unlike /processing), and the failed-order actions need the
+    // full row.
     if (req.method === "GET" && segments[0] === "archived") {
       const { data, error } = await supabase
         .from("orders_shipping")
-        .select(
-          "id, store_key, shopify_order_id, shopify_order_number, customer_name, items, last_error, held_reason, held_at, tracking_code, label_pdf_url, archived_at, archived_by",
-        )
-        .eq("status", "archived")
-        .order("archived_at", { ascending: false });
+        .select("*")
+        .in("status", ["failed", "archived"])
+        .order("updated_at", { ascending: false });
       if (error) throw error;
       return json({ orders: (data as OrderShippingRow[]).map(toApiShape) });
     }
@@ -464,6 +463,30 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
       return json({ ok: true });
     }
 
+    // Sends a FAILED order back to the approval queue so a person can
+    // re-check it (fix the customer's address, hold it, ...) instead of
+    // blindly reprocessing as-is. Refused once shipping was bought on Melhor
+    // Envio — that money would be stranded; Cancelar (refund + park in held)
+    // first.
+    if (req.method === "POST" && segments[1] === "back-to-queue") {
+      const id = segments[0];
+      const { data: order, error: findError } = await supabase.from("orders_shipping").select("*").eq("id", id).single();
+      if (findError || !order) return json({ error: "not_found" }, 404);
+      if (order.status !== "failed") {
+        return json({ error: `cannot send order in status ${order.status} back to the queue` }, 400);
+      }
+      if (order.melhor_envio_order_id) {
+        return json({ error: "Esse pedido ja comprou frete na Melhor Envio — use Cancelar (estorna e coloca em espera) antes." }, 400);
+      }
+      const { error } = await supabase
+        .from("orders_shipping")
+        .update({ status: "pending_approval", last_error: null })
+        .eq("id", id);
+      if (error) throw error;
+      await reportExternalStageChangeForIds(supabase, config, [id]);
+      return json({ ok: true });
+    }
+
     // Undoes an already-purchased label: cancels the shipment at Melhor
     // Envio (refunds the wallet) and parks the order in "held" so it needs
     // an explicit human decision (revert + re-approve, or leave it) instead
@@ -495,7 +518,10 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
       const id = segments[0];
       const { data: order, error: findError } = await supabase.from("orders_shipping").select("*").eq("id", id).single();
       if (findError || !order) return json({ error: "not_found" }, 404);
-      if (order.status !== "held" && order.status !== "failed" && order.status !== "tracking_ready") {
+      // "external" included so a "Processados por fora" row can be removed
+      // from the panel too (it has no automated next step waiting on it).
+      const archivable = ["held", "failed", "tracking_ready", "external"];
+      if (!archivable.includes(order.status)) {
         return json({ error: `cannot archive order in status ${order.status}` }, 400);
       }
       const { error } = await supabase
@@ -506,13 +532,17 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
       return json({ ok: true });
     }
 
-    // Undo an /archive. There's no stored "status before archiving" column,
-    // so this infers it from fields /archive never touches: held_at is only
-    // ever set by /hold (which only fires from pending_approval — an order
-    // that reached the shipping pipeline never has one), and tracking_code
-    // is only ever set once Melhor Envio hands back a code. Between the
-    // three statuses /archive accepts (held, tracking_ready, failed), that
-    // pins down exactly which one this was.
+    // Undo an /archive. There's no stored "status before archiving" column
+    // (would need a migration), so this infers it from fields /archive never
+    // touches:
+    //  - held_at set                        -> was "held"   (only /hold sets it)
+    //  - melhor_envio_order_id + tracking_code -> "tracking_ready" (real
+    //    tracking_ready always has both)
+    //  - tracking_code but NO ME order id   -> "external" (a Vendas Externas
+    //    order carries a Shopify-fulfillment tracking code, never a ME order)
+    //  - otherwise                          -> "failed"
+    // Edge: an external order archived with no tracking code at all restores
+    // as "failed" — rare, and harmless (shows in the erros/removidos tab).
     if (req.method === "POST" && segments[1] === "restore") {
       const id = segments[0];
       const { data: order, error: findError } = await supabase.from("orders_shipping").select("*").eq("id", id).single();
@@ -520,7 +550,13 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
       if (order.status !== "archived") {
         return json({ error: `cannot restore order in status ${order.status}` }, 400);
       }
-      const restoredStatus: ShippingStatus = order.held_at ? "held" : order.tracking_code ? "tracking_ready" : "failed";
+      const restoredStatus: ShippingStatus = order.held_at
+        ? "held"
+        : order.melhor_envio_order_id && order.tracking_code
+          ? "tracking_ready"
+          : order.tracking_code
+            ? "external"
+            : "failed";
       const { error } = await supabase
         .from("orders_shipping")
         .update({ status: restoredStatus, archived_at: null, archived_by: null })

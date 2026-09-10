@@ -879,12 +879,13 @@ Deno.test("refuses to restore an order that isn't archived", async () => {
   assertEquals(fake.table("orders_shipping")[0].status, "failed");
 });
 
-Deno.test("GET /archived lists archived orders newest first", async () => {
+Deno.test("GET /archived returns both failed and removed orders, newest activity first", async () => {
   const fake = makeFakeSupabase();
   fake.table("orders_shipping").push(
-    { id: "a1", store_key: "external", shopify_order_id: "7105", status: "archived", archived_at: "2026-09-08T09:00:00Z", archived_by: "vitor@m3ntalmadness.com" },
-    { id: "a2", store_key: "external", shopify_order_id: "7106", status: "archived", archived_at: "2026-09-08T12:00:00Z", archived_by: "vitor@m3ntalmadness.com" },
-    { id: "a3", store_key: "test", shopify_order_id: "7107", status: "failed" },
+    { id: "a1", store_key: "external", shopify_order_id: "7105", status: "archived", archived_at: "2026-09-08T09:00:00Z", archived_by: "vitor@m3ntalmadness.com", updated_at: "2026-09-08T09:00:00Z" },
+    { id: "a2", store_key: "external", shopify_order_id: "7106", status: "archived", archived_at: "2026-09-08T12:00:00Z", archived_by: "vitor@m3ntalmadness.com", updated_at: "2026-09-08T12:00:00Z" },
+    { id: "a3", store_key: "test", shopify_order_id: "7107", status: "failed", last_error: "erro qualquer", updated_at: "2026-09-08T15:00:00Z" },
+    { id: "a4", store_key: "test", shopify_order_id: "7108", status: "tracking_ready", updated_at: "2026-09-08T20:00:00Z" },
   );
 
   const req = new Request("http://localhost/functions/v1/orders-api/archived", {
@@ -896,7 +897,99 @@ Deno.test("GET /archived lists archived orders newest first", async () => {
 
   assertEquals(res.status, 200);
   const { orders } = await res.json();
-  assertEquals(orders.map((o: { id: string }) => o.id), ["a2", "a1"]);
+  // a4 (tracking_ready) excluded; failed + archived only, updated_at desc.
+  assertEquals(orders.map((o: { id: string }) => o.id), ["a3", "a2", "a1"]);
+});
+
+Deno.test("back-to-queue sends a failed order (no shipping bought) back to pending_approval", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push({
+    id: "f1",
+    store_key: "test",
+    shopify_order_id: "7201",
+    status: "failed",
+    last_error: "endereco invalido",
+    melhor_envio_order_id: null,
+  });
+
+  const req = new Request("http://localhost/functions/v1/orders-api/f1/back-to-queue", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleOrdersApi(req, { config, supabase: fake as any });
+
+  assertEquals(res.status, 200);
+  const order = fake.table("orders_shipping")[0];
+  assertEquals(order.status, "pending_approval");
+  assertEquals(order.last_error, null);
+});
+
+Deno.test("back-to-queue refuses a failed order that already bought shipping on Melhor Envio", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push({
+    id: "f2",
+    store_key: "test",
+    shopify_order_id: "7202",
+    status: "failed",
+    melhor_envio_order_id: "me-order-77",
+  });
+
+  const req = new Request("http://localhost/functions/v1/orders-api/f2/back-to-queue", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleOrdersApi(req, { config, supabase: fake as any });
+
+  assertEquals(res.status, 400);
+  assertEquals(fake.table("orders_shipping")[0].status, "failed");
+});
+
+Deno.test("back-to-queue refuses an order that isn't failed", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push({ id: "f3", store_key: "test", shopify_order_id: "7203", status: "tracking_ready" });
+
+  const req = new Request("http://localhost/functions/v1/orders-api/f3/back-to-queue", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleOrdersApi(req, { config, supabase: fake as any });
+
+  assertEquals(res.status, 400);
+});
+
+Deno.test("archive accepts an 'external' order, and restore sends it back to external", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push({
+    id: "e1",
+    store_key: "external",
+    shopify_order_id: "7301",
+    status: "external",
+    tracking_code: "AA123456785BR",
+    tracking_company: "Correios",
+    melhor_envio_order_id: null,
+    held_at: null,
+  });
+
+  const archiveReq = new Request("http://localhost/functions/v1/orders-api/e1/archive", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+  });
+  // deno-lint-ignore no-explicit-any
+  assertEquals((await handleOrdersApi(archiveReq, { config, supabase: fake as any })).status, 200);
+  assertEquals(fake.table("orders_shipping")[0].status, "archived");
+
+  const restoreReq = new Request("http://localhost/functions/v1/orders-api/e1/restore", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleOrdersApi(restoreReq, { config, supabase: fake as any });
+  assertEquals(res.status, 200);
+  assertEquals(await res.json(), { ok: true, status: "external" });
+  assertEquals(fake.table("orders_shipping")[0].status, "external");
 });
 
 function withShopifyOrderLookupMock(order: unknown | null, fn: () => Promise<void>) {
