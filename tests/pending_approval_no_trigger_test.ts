@@ -38,10 +38,10 @@ async function sign(body: string, secret: string): Promise<string> {
 const config = loadConfig();
 const secret = "test-webhook-secret";
 
-// orders-api now gates on a real Supabase session JWT (verify_jwt = true at
-// the gateway, decoded-only in getAuthenticatedUser) instead of a shared
-// token — this builds a fake-but-well-formed one for tests, no real
-// signature needed since the gateway would have already verified it.
+// orders-api gates on a real Supabase session JWT — getAuthenticatedUser
+// (_shared/auth.ts) verifies it via supabase.auth.getUser(token), which the
+// fake client's auth.getUser (fake_supabase.ts) answers by decoding this
+// same well-formed-but-unsigned shape, no real signature needed in tests.
 function fakeUserJwt(email: string): string {
   const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }));
   const payload = btoa(JSON.stringify({ role: "authenticated", email, sub: "test-user-id" }));

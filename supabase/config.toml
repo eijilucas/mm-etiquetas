@@ -23,8 +23,18 @@ port = 54323
 [functions.shopify-webhook]
 verify_jwt = false
 
+# Was `true` until 2026-09-10. The gateway's built-in verify_jwt only
+# understands the legacy symmetric (HS256) JWT secret -- once the project
+# rotated to asymmetric JWT Signing Keys (ECC/P-256, done ~2026-08-18), every
+# freshly issued or refreshed session token got rejected at the gateway with
+# `{"code":401,"message":"Invalid JWT"}` / UNAUTHORIZED_ASYMMETRIC_JWT before
+# this function's own code ever ran -- effectively locking every real user
+# out of the whole panel. Per Supabase's own guidance for asymmetric-key
+# projects, auth now happens in code instead: getAuthenticatedUser calls
+# supabase.auth.getUser(token), which validates against the Auth API and
+# works regardless of which key type signed the token.
 [functions.orders-api]
-verify_jwt = true
+verify_jwt = false
 
 [functions.panel]
 verify_jwt = false

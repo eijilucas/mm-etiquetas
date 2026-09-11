@@ -1,3 +1,4 @@
+import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import type { AppConfig } from "./config.ts";
 
 function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -19,24 +20,30 @@ export interface AuthenticatedUser {
   email: string;
 }
 
-// orders-api has `verify_jwt = true` in config.toml, so Supabase's gateway
-// already validated the JWT's signature/expiry before this code ever runs —
-// we only need to decode the payload (no re-verification needed) and check
-// it's a real logged-in user ("authenticated" role), not just a request
-// carrying the public anon key (which is also a technically-valid JWT).
-export function getAuthenticatedUser(req: Request): AuthenticatedUser | null {
+// orders-api used to have `verify_jwt = true` in config.toml and just decode
+// the (gateway-pre-verified) payload here. That broke on 2026-09-10: this
+// project rotated to asymmetric JWT Signing Keys (ECC/P-256), and the
+// gateway's built-in verify_jwt only understands the legacy symmetric
+// (HS256) secret -- every freshly issued/refreshed session token got
+// rejected at the gateway with 401 UNAUTHORIZED_ASYMMETRIC_JWT before this
+// code ever ran. Fix (per Supabase's own guidance for asymmetric-key
+// projects): verify_jwt is now `false`, and this calls the Auth API's
+// getUser(token) instead -- it validates the token's signature/expiry
+// (regardless of which key type signed it) and, unlike local decoding, also
+// catches a token whose session was revoked. `supabase` is the existing
+// service-role client already created per-request in orders-api; getUser
+// works against any token when called from a service-role client.
+export async function getAuthenticatedUser(
+  req: Request,
+  supabase: SupabaseClient,
+): Promise<AuthenticatedUser | null> {
   const header = req.headers.get("authorization") ?? "";
   const [scheme, token] = header.split(" ");
   if (scheme !== "Bearer" || !token) return null;
-  const parts = token.split(".");
-  if (parts.length !== 3) return null;
-  try {
-    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
-    if (payload.role !== "authenticated" || typeof payload.email !== "string") return null;
-    return { id: payload.sub, email: payload.email };
-  } catch {
-    return null;
-  }
+
+  const { data, error } = await supabase.auth.getUser(token);
+  if (error || !data.user || typeof data.user.email !== "string") return null;
+  return { id: data.user.id, email: data.user.email };
 }
 
 export function requireCronSecret(req: Request, config: AppConfig): boolean {

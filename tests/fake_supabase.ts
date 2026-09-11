@@ -192,6 +192,35 @@ class FakeQueryBuilder implements PromiseLike<QueryResult> {
 export class FakeSupabaseClient {
   tables: Record<string, Row[]> = {};
 
+  // Mirrors supabase-js's auth.getUser(jwt) shape closely enough for
+  // getAuthenticatedUser (_shared/auth.ts) to exercise against it — orders-api
+  // calls this instead of decoding the JWT itself now (see auth.ts for why:
+  // the gateway's verify_jwt can't validate this project's asymmetric JWT
+  // Signing Keys, so verification moved into the Auth API call). No real
+  // signature check here, same as the old local-decode approach — tests only
+  // need a well-formed fake token (see fakeUserJwt in the test files), never
+  // a genuinely signed one.
+  auth = {
+    // deno-lint-ignore no-explicit-any
+    getUser: (token?: string): Promise<{ data: { user: any }; error: any }> => {
+      if (!token) return Promise.resolve({ data: { user: null }, error: new Error("no token") });
+      const parts = token.split(".");
+      if (parts.length !== 3) return Promise.resolve({ data: { user: null }, error: new Error("malformed token") });
+      try {
+        const payload = JSON.parse(atob(parts[1]));
+        if (payload.role !== "authenticated" || typeof payload.email !== "string") {
+          return Promise.resolve({ data: { user: null }, error: new Error("not authenticated") });
+        }
+        return Promise.resolve({
+          data: { user: { id: payload.sub ?? "test-user-id", email: payload.email } },
+          error: null,
+        });
+      } catch {
+        return Promise.resolve({ data: { user: null }, error: new Error("invalid token") });
+      }
+    },
+  };
+
   table(name: string): Row[] {
     if (!this.tables[name]) this.tables[name] = [];
     return this.tables[name];

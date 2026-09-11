@@ -87,16 +87,18 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
   const segments = routeSegments(req);
   const isReconciliationRun = req.method === "POST" && segments[0] === "reconciliation" && segments[1] === "run";
 
-  // Gateway-level `verify_jwt = true` (see config.toml) already rejects any
-  // request without a validly-signed Supabase JWT before this code runs —
-  // this just confirms it's a real logged-in user (not just the public
-  // anon key) and gives us their email for approved_by/held_by.
-  const user = getAuthenticatedUser(req);
+  // verify_jwt is `false` for this function (see config.toml — the gateway's
+  // built-in check can't validate this project's asymmetric JWT Signing
+  // Keys), so auth happens here instead: getAuthenticatedUser calls the Auth
+  // API's getUser(token), which validates the token itself and confirms it's
+  // a real logged-in user (not just the public anon key), giving us their
+  // email for approved_by/held_by.
+  const supabase = deps.supabase ?? createServiceClient(config);
+  const user = await getAuthenticatedUser(req, supabase);
   if (!user) {
     return json({ error: "unauthorized" }, 401);
   }
 
-  const supabase = deps.supabase ?? createServiceClient(config);
   const runPipeline = deps.runPipeline ?? runShippingPipeline;
   const cancelOrder = deps.cancelOrder ?? cancelOrderLabel;
   const manualTracking = deps.manualTracking ?? manualTrackingSync;
