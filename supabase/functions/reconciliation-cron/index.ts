@@ -8,6 +8,7 @@ import {
   syncPostedOrders,
   retryStalledTracking,
   syncShippingCostDifferences,
+  backfillShippingPrices,
 } from "../_shared/reconciliation.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
@@ -63,12 +64,33 @@ async function releaseLock(supabase: SupabaseClient, name: string): Promise<void
 // function, one deploy target, matching the "one fewer moving cron piece"
 // choice already made for the stuck-order alert above. A malformed/empty
 // body (or a parse failure) always falls through to the default job.
-async function readJob(req: Request): Promise<string> {
+async function readJobBody(req: Request): Promise<{ job: string; offset: number }> {
   try {
     const body = await req.clone().json();
-    return typeof body?.job === "string" ? body.job : "reconciliation";
+    const job = typeof body?.job === "string" ? body.job : "reconciliation";
+    const offset = Number.isInteger(body?.offset) && body.offset >= 0 ? body.offset : 0;
+    return { job, offset };
   } catch {
-    return "reconciliation";
+    return { job: "reconciliation", offset: 0 };
+  }
+}
+
+// Backfill sob demanda, não agendado -- não tem cron_lock nem migração
+// registrada pra ele (ver README "Passo manual opcional"). Chamado
+// manualmente, uma vez por página, avançando `offset` a cada chamada até a
+// resposta trazer hasMore: false. Empurra o valor_frete de pedidos que já
+// existiam antes do bridge pro lucro-liquido estar no ar (esses nunca
+// passaram por runShippingPipeline depois disso, então nunca dispararam
+// reportShippingCost sozinhos). Sem lock: chamadas concorrentes só
+// duplicam trabalho (idempotente do lado do lucro-liquido), nunca corrompem
+// nada -- não vale a complexidade de um lock pra uma ferramenta manual.
+async function runValorFreteBackfillJob(supabase: SupabaseClient, config: AppConfig, offset: number): Promise<Response> {
+  try {
+    const result = await backfillShippingPrices(supabase, config, offset);
+    return new Response(JSON.stringify(result), { status: 200, headers: { "Content-Type": "application/json" } });
+  } catch (error) {
+    console.log(JSON.stringify({ level: "error", err: String(error), msg: "valor_frete_backfill_failed" }));
+    return new Response(JSON.stringify({ error: "internal_error" }), { status: 500, headers: { "Content-Type": "application/json" } });
   }
 }
 
@@ -111,8 +133,12 @@ export async function handleReconciliationCron(req: Request, deps: Deps = {}): P
 
   const supabase = deps.supabase ?? createServiceClient(config);
 
-  if ((await readJob(req)) === "melhorenvio_conciliation") {
+  const { job, offset } = await readJobBody(req);
+  if (job === "melhorenvio_conciliation") {
     return runConciliationJob(supabase, config);
+  }
+  if (job === "melhorenvio_valor_frete_backfill") {
+    return runValorFreteBackfillJob(supabase, config, offset);
   }
 
   let acquired: boolean;

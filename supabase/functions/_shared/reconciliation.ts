@@ -5,7 +5,7 @@ import { upsertPendingCandidate } from "./db.ts";
 import { sendAlert, runShippingPipeline, TRACKING_NOT_YET_AVAILABLE_ERROR } from "./pipeline.ts";
 import { fetchTrackingBatch, fetchConciliationDifference, POSTED_ME_STATUSES } from "./melhorenvio.ts";
 import { reportExternalStageChangeForIds } from "./integrationCallback.ts";
-import { reportShippingCostDifference } from "./lucroLiquidoCallback.ts";
+import { reportShippingCostDifference, sendShippingCostCallback } from "./lucroLiquidoCallback.ts";
 import { sleep } from "./retry.ts";
 
 // Mesmo motivo do stagger em orders-api/index.ts (approve em lote): mesmo
@@ -280,4 +280,54 @@ export async function syncShippingCostDifferences(
 
   log({ checked, found, reported, totalCandidates, batch, totalBatches }, "conciliation_sync_completed");
   return { checked, found, reported, totalCandidates, batch, totalBatches };
+}
+
+// One-off backfill: pedidos que já tinham shipping_price antes do bridge
+// pro lucro-liquido existir nunca dispararam reportShippingCost (esse só
+// roda dentro de runShippingPipeline, então só vale pra pedido aprovado/
+// reprocessado DEPOIS do bridge estar no ar) — isso empurra o valor_frete
+// já existente pra trás, sem reprocessar nada de verdade (só lê e reenvia).
+// Paginado com offset explícito (sem estado no banco) pra caber no mesmo
+// teto de recursos do plano free -- ver CONCILIATION_BATCH_SIZE. Chamador
+// (o job "melhorenvio_valor_frete_backfill" em reconciliation-cron)
+// itera aumentando o offset até hasMore vir false.
+export async function backfillShippingPrices(
+  supabase: SupabaseClient,
+  config: AppConfig,
+  offset: number,
+): Promise<{ checked: number; reported: number; offset: number; limit: number; total: number; hasMore: boolean }> {
+  const limit = CONCILIATION_BATCH_SIZE;
+  const { data, error, count } = await supabase
+    .from("orders_shipping")
+    .select("shopify_order_id, shopify_order_number, shipping_price", { count: "exact" })
+    .neq("store_key", "external")
+    .not("shipping_price", "is", null)
+    .order("shopify_order_id", { ascending: true })
+    .range(offset, offset + limit - 1);
+  if (error) throw error;
+
+  const rows = (data ?? []) as { shopify_order_id: string; shopify_order_number: string | null; shipping_price: number }[];
+  let checked = 0;
+  let reported = 0;
+  for (const order of rows) {
+    checked += 1;
+    try {
+      await sendShippingCostCallback(config, {
+        shopify_order_id: order.shopify_order_id,
+        order_number: order.shopify_order_number,
+        valor_frete: order.shipping_price,
+      });
+      reported += 1;
+    } catch (err) {
+      log(
+        { shopifyOrderId: order.shopify_order_id, err: String(err), level: "error" },
+        "valor_frete_backfill_order_failed",
+      );
+    }
+  }
+
+  const total = count ?? offset + rows.length;
+  const hasMore = offset + rows.length < total;
+  log({ checked, reported, offset, limit, total, hasMore }, "valor_frete_backfill_batch_completed");
+  return { checked, reported, offset, limit, total, hasMore };
 }

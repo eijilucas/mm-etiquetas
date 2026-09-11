@@ -59,6 +59,8 @@ class FakeQueryBuilder implements PromiseLike<QueryResult> {
   #singleMode: "none" | "single" | "maybeSingle" = "none";
   #wantCount = false;
   #head = false;
+  #rangeFrom: number | undefined;
+  #rangeTo: number | undefined;
 
   constructor(table: Row[]) {
     this.#table = table;
@@ -149,6 +151,12 @@ class FakeQueryBuilder implements PromiseLike<QueryResult> {
     return this;
   }
 
+  range(from: number, to: number): this {
+    this.#rangeFrom = from;
+    this.#rangeTo = to;
+    return this;
+  }
+
   #execute(): QueryResult {
     if (this.#op === "insert") {
       const now = new Date().toISOString();
@@ -182,8 +190,14 @@ class FakeQueryBuilder implements PromiseLike<QueryResult> {
     if (this.#singleMode === "single" || this.#singleMode === "maybeSingle") {
       return { data: rows[0] ?? null, error: null };
     }
+    // Count reflects the full filtered set, same as Postgres/PostgREST --
+    // range() only slices what's returned in `data`, not what's counted.
+    const totalCount = rows.length;
+    if (this.#rangeFrom !== undefined && this.#rangeTo !== undefined) {
+      rows = rows.slice(this.#rangeFrom, this.#rangeTo + 1);
+    }
     if (this.#wantCount) {
-      return { data: this.#head ? null : rows, error: null, count: rows.length };
+      return { data: this.#head ? null : rows, error: null, count: totalCount };
     }
     return { data: rows, error: null };
   }
