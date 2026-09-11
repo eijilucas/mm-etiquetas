@@ -9,6 +9,7 @@ import {
   retryStalledTracking,
   syncShippingCostDifferences,
   backfillShippingPrices,
+  backfillLabelCosts,
 } from "../_shared/reconciliation.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
@@ -64,14 +65,20 @@ async function releaseLock(supabase: SupabaseClient, name: string): Promise<void
 // function, one deploy target, matching the "one fewer moving cron piece"
 // choice already made for the stuck-order alert above. A malformed/empty
 // body (or a parse failure) always falls through to the default job.
-async function readJobBody(req: Request): Promise<{ job: string; offset: number }> {
+// Default lookback for the label-cost backfill job below -- overridable via
+// body.since (ISO date/timestamp string), but this is what "a partir de
+// 01/07/2026" (as requested) resolves to when the caller doesn't pass one.
+const LABEL_COST_BACKFILL_DEFAULT_SINCE = "2026-07-01T00:00:00Z";
+
+async function readJobBody(req: Request): Promise<{ job: string; offset: number; since: string }> {
   try {
     const body = await req.clone().json();
     const job = typeof body?.job === "string" ? body.job : "reconciliation";
     const offset = Number.isInteger(body?.offset) && body.offset >= 0 ? body.offset : 0;
-    return { job, offset };
+    const since = typeof body?.since === "string" && body.since ? body.since : LABEL_COST_BACKFILL_DEFAULT_SINCE;
+    return { job, offset, since };
   } catch {
-    return { job: "reconciliation", offset: 0 };
+    return { job: "reconciliation", offset: 0, since: LABEL_COST_BACKFILL_DEFAULT_SINCE };
   }
 }
 
@@ -90,6 +97,28 @@ async function runValorFreteBackfillJob(supabase: SupabaseClient, config: AppCon
     return new Response(JSON.stringify(result), { status: 200, headers: { "Content-Type": "application/json" } });
   } catch (error) {
     console.log(JSON.stringify({ level: "error", err: String(error), msg: "valor_frete_backfill_failed" }));
+    return new Response(JSON.stringify({ error: "internal_error" }), { status: 500, headers: { "Content-Type": "application/json" } });
+  }
+}
+
+// Backfill sob demanda pro custo real da etiqueta pro lucro-liquido,
+// cobrindo TODO pedido com etiqueta comprada desde `since` -- inclusive os
+// que não têm shipping_price local (pedido antigo, de antes da coluna
+// existir), buscando o preço na própria Melhor Envio nesse caso. Ver
+// backfillLabelCosts em reconciliation.ts pro racional completo. Mesmo
+// padrão sem lock/schedule dos outros backfills: o chamador pagina
+// avançando `offset` até hasMore vir false.
+async function runLabelCostBackfillJob(
+  supabase: SupabaseClient,
+  config: AppConfig,
+  offset: number,
+  since: string,
+): Promise<Response> {
+  try {
+    const result = await backfillLabelCosts(supabase, config, offset, since);
+    return new Response(JSON.stringify(result), { status: 200, headers: { "Content-Type": "application/json" } });
+  } catch (error) {
+    console.log(JSON.stringify({ level: "error", err: String(error), msg: "label_cost_backfill_failed" }));
     return new Response(JSON.stringify({ error: "internal_error" }), { status: 500, headers: { "Content-Type": "application/json" } });
   }
 }
@@ -133,12 +162,15 @@ export async function handleReconciliationCron(req: Request, deps: Deps = {}): P
 
   const supabase = deps.supabase ?? createServiceClient(config);
 
-  const { job, offset } = await readJobBody(req);
+  const { job, offset, since } = await readJobBody(req);
   if (job === "melhorenvio_conciliation") {
     return runConciliationJob(supabase, config);
   }
   if (job === "melhorenvio_valor_frete_backfill") {
     return runValorFreteBackfillJob(supabase, config, offset);
+  }
+  if (job === "melhorenvio_label_cost_backfill") {
+    return runLabelCostBackfillJob(supabase, config, offset, since);
   }
 
   let acquired: boolean;

@@ -287,7 +287,9 @@ export async function fetchAccountBalance(config: AppConfig): Promise<number | n
 // unconfirmed live). `q` is a fuzzy search (tracking/protocol/id/document),
 // so results are filtered down to an exact `tracking` match before use.
 interface MeConciliationOrderItem {
+  id?: string;
   tracking?: string;
+  price?: number;
   conciliation?: {
     value?: number;
     type?: string;
@@ -321,6 +323,34 @@ export async function fetchConciliationDifference(config: AppConfig, trackingCod
     net += order.conciliation?.type === "credit" ? -value : value;
   }
   return sawConciliation ? net : null;
+}
+
+// Same endpoint/shape as fetchConciliationDifference, but keyed by the ME
+// shipment id (melhor_envio_order_id) instead of tracking code -- needed for
+// the label-cost backfill (2026-09-11): legacy orders purchased before the
+// shipping_price column existed have no local price at all, so the only way
+// to recover what Melhor Envio actually charged is asking Melhor Envio.
+// `price` is the original purchase price (before any conference adjustment);
+// `conciliationValue` is the same net-debit/credit computation as
+// fetchConciliationDifference, picked up for free since it's already in the
+// same response -- null when there's no order match or no price on it.
+export async function fetchOrderCostByMelhorEnvioId(
+  config: AppConfig,
+  melhorEnvioOrderId: string,
+): Promise<{ price: number; conciliationValue: number | null } | null> {
+  const body = await meFetch<MeOrderSearchResponse>(config, `/me/orders/search?q=${encodeURIComponent(melhorEnvioOrderId)}`, {
+    method: "GET",
+  });
+  const order = (body?.data ?? []).find((o) => o.id === melhorEnvioOrderId);
+  if (!order || typeof order.price !== "number" || !Number.isFinite(order.price)) return null;
+
+  const civalue = order.conciliation?.value;
+  const conciliationValue =
+    typeof civalue === "number" && Number.isFinite(civalue) && civalue !== 0
+      ? order.conciliation?.type === "credit" ? -civalue : civalue
+      : null;
+
+  return { price: order.price, conciliationValue };
 }
 
 export function buildFromAddress(config: AppConfig): MeAddress {

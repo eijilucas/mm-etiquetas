@@ -3,7 +3,7 @@ import type { AppConfig } from "./config.ts";
 import { fetchPaidUnfulfilledOrders, mapShopifyOrderToCandidate } from "./shopify.ts";
 import { upsertPendingCandidate } from "./db.ts";
 import { sendAlert, runShippingPipeline, TRACKING_NOT_YET_AVAILABLE_ERROR } from "./pipeline.ts";
-import { fetchTrackingBatch, fetchConciliationDifference, POSTED_ME_STATUSES } from "./melhorenvio.ts";
+import { fetchTrackingBatch, fetchConciliationDifference, fetchOrderCostByMelhorEnvioId, POSTED_ME_STATUSES } from "./melhorenvio.ts";
 import { reportExternalStageChangeForIds } from "./integrationCallback.ts";
 import { reportShippingCostDifference, sendShippingCostCallback } from "./lucroLiquidoCallback.ts";
 import { sleep } from "./retry.ts";
@@ -19,6 +19,14 @@ const RETRY_STALLED_STAGGER_MS = 1200;
 // reconsulta a Melhor Envio pra TODO pedido dentro dessa janela de volta.
 // 60 dias cobre a demora típica de conferência de postagem com folga.
 const CONCILIATION_LOOKBACK_DAYS = 60;
+
+// Mais pesado que CONCILIATION_BATCH_SIZE: pedido sem shipping_price local
+// (legado, de antes da coluna existir) precisa de uma chamada extra pra
+// Melhor Envio dentro do próprio loop (fetchOrderCostByMelhorEnvioId), além
+// da pausa entre chamadas pedida explicitamente pelo lado do lucro-liquido —
+// lote menor pra não repetir o WORKER_RESOURCE_LIMIT de antes.
+const LABEL_COST_BACKFILL_BATCH_SIZE = 8;
+const LABEL_COST_BACKFILL_PAUSE_MS = 250;
 
 function log(fields: Record<string, unknown>, msg: string) {
   console.log(JSON.stringify({ msg, ...fields }));
@@ -330,4 +338,111 @@ export async function backfillShippingPrices(
   const hasMore = offset + rows.length < total;
   log({ checked, reported, offset, limit, total, hasMore }, "valor_frete_backfill_batch_completed");
   return { checked, reported, offset, limit, total, hasMore };
+}
+
+// Backfill maior que backfillShippingPrices acima: aquele só cobre pedido
+// que já tem shipping_price local (2026-09-11: 245 de 621 com etiqueta
+// comprada). Pedido comprado antes da coluna shipping_price existir tem ela
+// NULL mesmo tendo comprado etiqueta de verdade -- pra esses, o único jeito
+// de saber o custo real é perguntar pra própria Melhor Envio
+// (fetchOrderCostByMelhorEnvioId), usando o melhor_envio_order_id que já
+// temos guardado desde sempre.
+//
+// Pedido "held" (status == "held") só existe hoje por causa de um Cancelar
+// -- ver cancelOrderLabel em pipeline.ts, que NÃO limpa shipping_price ao
+// cancelar (fica com o valor antigo, agora estornado). Sem uma forma de
+// obter o valor líquido efetivamente cobrado após o estorno, esses são
+// pulados (custo real tratado como zero), como pedido pelo lucro-liquido.
+//
+// created_at é usado como proxy de "quando a etiqueta foi comprada" -- não
+// existe uma coluna própria pra esse timestamp; é uma aproximação (pedido
+// que ficou muito tempo parado em pending_approval/held antes de ser
+// aprovado teria created_at bem anterior à compra real da etiqueta).
+//
+// Paginado com offset explícito, mesmo padrão de backfillShippingPrices,
+// lote menor (LABEL_COST_BACKFILL_BATCH_SIZE) e uma pausa curta entre
+// pedidos (LABEL_COST_BACKFILL_PAUSE_MS), como pedido -- cada pedido sem
+// preço local já soma duas chamadas de rede (Melhor Envio + o callback).
+export async function backfillLabelCosts(
+  supabase: SupabaseClient,
+  config: AppConfig,
+  offset: number,
+  sinceIso: string,
+): Promise<{
+  checked: number;
+  reported: number;
+  skippedHeld: number;
+  errors: number;
+  offset: number;
+  limit: number;
+  total: number;
+  hasMore: boolean;
+}> {
+  const limit = LABEL_COST_BACKFILL_BATCH_SIZE;
+  const { data, error, count } = await supabase
+    .from("orders_shipping")
+    .select("shopify_order_id, shopify_order_number, shipping_price, melhor_envio_order_id, status", { count: "exact" })
+    .neq("store_key", "external")
+    .not("melhor_envio_order_id", "is", null)
+    .gte("created_at", sinceIso)
+    .order("shopify_order_id", { ascending: true })
+    .range(offset, offset + limit - 1);
+  if (error) throw error;
+
+  const rows = (data ?? []) as {
+    shopify_order_id: string;
+    shopify_order_number: string | null;
+    shipping_price: number | null;
+    melhor_envio_order_id: string;
+    status: string;
+  }[];
+
+  let checked = 0;
+  let reported = 0;
+  let skippedHeld = 0;
+  let errors = 0;
+  for (const order of rows) {
+    checked += 1;
+
+    if (order.status === "held") {
+      skippedHeld += 1;
+      log({ shopifyOrderId: order.shopify_order_id }, "label_cost_backfill_skipped_held");
+      if (checked < rows.length) await sleep(LABEL_COST_BACKFILL_PAUSE_MS);
+      continue;
+    }
+
+    try {
+      let valorFrete = order.shipping_price;
+      let diferencaFrete: number | null = null;
+      if (valorFrete == null) {
+        const cost = await fetchOrderCostByMelhorEnvioId(config, order.melhor_envio_order_id);
+        if (cost == null) {
+          throw new Error(`melhor_envio_order_id ${order.melhor_envio_order_id} not found on Melhor Envio`);
+        }
+        valorFrete = cost.price;
+        diferencaFrete = cost.conciliationValue;
+      }
+
+      await sendShippingCostCallback(config, {
+        shopify_order_id: order.shopify_order_id,
+        order_number: order.shopify_order_number,
+        valor_frete: valorFrete,
+        ...(diferencaFrete != null ? { diferenca_frete: diferencaFrete } : {}),
+      });
+      reported += 1;
+    } catch (err) {
+      errors += 1;
+      log(
+        { shopifyOrderId: order.shopify_order_id, err: String(err), level: "error" },
+        "label_cost_backfill_order_failed",
+      );
+    }
+
+    if (checked < rows.length) await sleep(LABEL_COST_BACKFILL_PAUSE_MS);
+  }
+
+  const total = count ?? offset + rows.length;
+  const hasMore = offset + rows.length < total;
+  log({ checked, reported, skippedHeld, errors, offset, limit, total, hasMore }, "label_cost_backfill_batch_completed");
+  return { checked, reported, skippedHeld, errors, offset, limit, total, hasMore };
 }
