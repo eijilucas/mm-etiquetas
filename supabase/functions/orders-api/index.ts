@@ -5,7 +5,7 @@ import { createServiceClient, toApiShape, upsertExternalCandidate } from "../_sh
 import type { OrderShippingRow, ShippingStatus } from "../_shared/db.ts";
 import { runShippingPipeline, cancelOrderLabel, manualTrackingSync, checkApprovalIssues } from "../_shared/pipeline.ts";
 import { runReconciliation, checkStuckOrders, syncPostedOrders, retryStalledTracking } from "../_shared/reconciliation.ts";
-import { fetchAccountBalance, fetchDeclarationPdfUrl, fetchTrackingBatch, fetchOrderConciliationProbe } from "../_shared/melhorenvio.ts";
+import { fetchAccountBalance, fetchDeclarationPdfUrl, fetchTrackingBatch } from "../_shared/melhorenvio.ts";
 import { fetchPaidFulfilledOrders, fetchOrderByNumber, mapShopifyOrderToCandidate, latestFulfillmentTracking } from "../_shared/shopify.ts";
 import { getStoreByKey } from "../_shared/config.ts";
 import { reportExternalStageChangeForIds } from "../_shared/integrationCallback.ts";
@@ -225,21 +225,6 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
         existingRows: existingRows ?? [],
         mapping,
       });
-    }
-
-    // TEMPORARY diagnostic route for the shipping-cost-callback "diferenca de
-    // frete" investigation (2026-09-10) — returns the raw, undocumented
-    // Melhor Envio response for GET /me/orders/search?q=<rastreio>, so we can
-    // see where the conference-debit value actually lives before building
-    // the real cron. Read-only, same auth as every other route here (a
-    // logged-in panel user). Delete this route + fetchOrderConciliationProbe
-    // once the cron is implemented.
-    if (req.method === "GET" && segments[0] === "me-conciliation-probe") {
-      const url = new URL(req.url);
-      const trackingCode = url.searchParams.get("trackingCode") ?? "";
-      if (!trackingCode) return json({ error: "trackingCode_required" }, 400);
-      const raw = await fetchOrderConciliationProbe(config, trackingCode);
-      return json({ raw });
     }
 
     // Read-only history: orders fulfilled entirely outside this system (see
