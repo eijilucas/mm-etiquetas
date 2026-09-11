@@ -76,7 +76,7 @@ Deno.test("finds a conference debit and reports diferenca_frete for a non-extern
         const config = loadConfig();
         // deno-lint-ignore no-explicit-any
         const result = await syncShippingCostDifferences(fake as any, config);
-        assertEquals(result, { checked: 1, found: 1, reported: 1 });
+        assertEquals(result, { checked: 1, found: 1, reported: 1, totalCandidates: 1, batch: 0, totalBatches: 1 });
         assertEquals(calls.length, 1);
         assertEquals(calls[0].body, {
           shopify_order_id: "5834923000001",
@@ -109,7 +109,7 @@ Deno.test("skips reporting when there's no conciliation difference", async () =>
         const config = loadConfig();
         // deno-lint-ignore no-explicit-any
         const result = await syncShippingCostDifferences(fake as any, config);
-        assertEquals(result, { checked: 1, found: 0, reported: 0 });
+        assertEquals(result, { checked: 1, found: 0, reported: 0, totalCandidates: 1, batch: 0, totalBatches: 1 });
         assertEquals(callbackCalled, false);
       },
     ),
@@ -131,7 +131,7 @@ Deno.test("excludes external orders from the candidate query", async () => {
         const config = loadConfig();
         // deno-lint-ignore no-explicit-any
         const result = await syncShippingCostDifferences(fake as any, config);
-        assertEquals(result, { checked: 0, found: 0, reported: 0 });
+        assertEquals(result, { checked: 0, found: 0, reported: 0, totalCandidates: 0, batch: 0, totalBatches: 1 });
         assertEquals(meCalled, false);
       },
     ),
@@ -153,7 +153,7 @@ Deno.test("excludes orders without a tracking code from the candidate query", as
         const config = loadConfig();
         // deno-lint-ignore no-explicit-any
         const result = await syncShippingCostDifferences(fake as any, config);
-        assertEquals(result, { checked: 0, found: 0, reported: 0 });
+        assertEquals(result, { checked: 0, found: 0, reported: 0, totalCandidates: 0, batch: 0, totalBatches: 1 });
         assertEquals(meCalled, false);
       },
     ),
@@ -176,7 +176,7 @@ Deno.test("excludes orders outside the lookback window", async () => {
         const config = loadConfig();
         // deno-lint-ignore no-explicit-any
         const result = await syncShippingCostDifferences(fake as any, config);
-        assertEquals(result, { checked: 0, found: 0, reported: 0 });
+        assertEquals(result, { checked: 0, found: 0, reported: 0, totalCandidates: 0, batch: 0, totalBatches: 1 });
         assertEquals(meCalled, false);
       },
     ),
@@ -208,8 +208,46 @@ Deno.test("one order's Melhor Envio lookup failing doesn't abort the rest of the
         const config = loadConfig();
         // deno-lint-ignore no-explicit-any
         const result = await syncShippingCostDifferences(fake as any, config);
-        assertEquals(result, { checked: 2, found: 1, reported: 1 });
+        assertEquals(result, { checked: 2, found: 1, reported: 1, totalCandidates: 2, batch: 0, totalBatches: 1 });
         assertEquals(calls.length, 1);
+      },
+    ),
+  );
+});
+
+// Regression: the first production run (32 candidates, no batching) hit
+// WORKER_RESOURCE_LIMIT on Supabase's free-tier Edge Function runtime — one
+// invocation making 32 sequential Melhor Envio calls was too much. Only a
+// bounded slice per run, rotating by day, should ever hit the network.
+Deno.test("only processes one batch's worth of candidates per run, not the whole window", async () => {
+  const fake = makeFakeSupabase();
+  // 25 candidates, ordered by shopify_order_id so the batch slice is
+  // deterministic ("01".."25", batch size 12 -> 3 batches: [01-12], [13-24], [25]).
+  for (let i = 1; i <= 25; i += 1) {
+    const id = String(i).padStart(2, "0");
+    fake.table("orders_shipping").push(
+      makeOrder({ id: `row-${id}`, shopify_order_id: id, shopify_order_number: id, tracking_code: `TRACK-${id}` }),
+    );
+  }
+
+  const meCalls: string[] = [];
+  await withEnv(lucroLiquidoEnv, () =>
+    withFetchMock(
+      (url) => {
+        if (url.includes("/me/orders/search")) {
+          meCalls.push(new URL(url).searchParams.get("q") ?? "");
+          return jsonResponse({ data: [] }); // no conciliation -> nothing to report, keeps this test focused on batching
+        }
+        throw new Error(`Unexpected fetch call: ${url}`);
+      },
+      async () => {
+        const config = loadConfig();
+        // deno-lint-ignore no-explicit-any
+        const result = await syncShippingCostDifferences(fake as any, config);
+        assertEquals(result.totalCandidates, 25);
+        assertEquals(result.totalBatches, 3); // ceil(25 / 12)
+        assertEquals(result.checked, meCalls.length); // never more than one batch's worth
+        assertEquals(meCalls.length <= 12, true);
       },
     ),
   );

@@ -206,23 +206,36 @@ export async function checkStuckOrders(supabase: SupabaseClient, config: AppConf
   }
 }
 
+// Teto de pedidos processados POR EXECUÇÃO. A primeira versão sem esse
+// limite (32 candidatos, ~2026-09-10) derrubou a invocação com
+// WORKER_RESOURCE_LIMIT no plano free do Supabase -- 32 chamadas de rede
+// sequenciais pra Melhor Envio (200ms-2s cada) somam tempo/recurso demais
+// pra uma única invocação de Edge Function nesse plano.
+const CONCILIATION_BATCH_SIZE = 12;
+
 // Roda uma vez por dia (ver o job "melhorenvio_conciliation" em
 // reconciliation-cron/index.ts) — puxa da Melhor Envio o débito/crédito de
 // conferência de postagem (reajuste de peso/dimensão, tela "Diferenças" do
-// financeiro da ME) de todo pedido não-externo com rastreio, dentro da
-// janela de CONCILIATION_LOOKBACK_DAYS, e empurra o total líquido pro
+// financeiro da ME) de pedidos não-externos com rastreio, dentro da janela
+// de CONCILIATION_LOOKBACK_DAYS, e empurra o total líquido pro
 // mental-lucro-liquido via reportShippingCostDifference. Pedido externo fica
 // de fora pelo mesmo motivo do reportShippingCost em runShippingPipeline:
 // shopify_order_id ali é o uuid do Vendas Externas, não um id Shopify.
 //
-// Sem persistência de "já processei isso hoje" (ver CONCILIATION_LOOKBACK_DAYS
-// acima), então isso reconsulta a Melhor Envio pra cada pedido da janela
-// toda vez que roda — best-effort por pedido: uma falha de rede/API num
-// rastreio não pode abortar o resto do lote.
+// Sem persistência de "já processei isso hoje" ou "já processei esse
+// pedido" (nenhuma migração nova é possível nesse ambiente), então isso não
+// processa a janela inteira de uma vez (ver CONCILIATION_BATCH_SIZE acima)
+// -- em vez disso, ordena os candidatos de forma estável (por
+// shopify_order_id) e pega uma fatia diferente a cada dia, girando pelo dia
+// do calendário (UTC) módulo o número de fatias. Cobre a janela inteira ao
+// longo de alguns dias em vez de todo santo dia — aceitável aqui porque a
+// própria conferência da transportadora já demora dias. Best-effort por
+// pedido dentro da fatia: uma falha de rede/API num rastreio não pode
+// abortar o resto do lote.
 export async function syncShippingCostDifferences(
   supabase: SupabaseClient,
   config: AppConfig,
-): Promise<{ checked: number; found: number; reported: number }> {
+): Promise<{ checked: number; found: number; reported: number; totalCandidates: number; batch: number; totalBatches: number }> {
   log({}, "conciliation_sync_start");
   const since = new Date(Date.now() - CONCILIATION_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const { data: candidates, error } = await supabase
@@ -230,13 +243,21 @@ export async function syncShippingCostDifferences(
     .select("shopify_order_id, shopify_order_number, tracking_code")
     .neq("store_key", "external")
     .not("tracking_code", "is", null)
-    .gte("updated_at", since);
+    .gte("updated_at", since)
+    .order("shopify_order_id", { ascending: true });
   if (error) throw error;
+
+  const all = (candidates ?? []) as { shopify_order_id: string; shopify_order_number: string | null; tracking_code: string }[];
+  const totalCandidates = all.length;
+  const totalBatches = Math.max(1, Math.ceil(totalCandidates / CONCILIATION_BATCH_SIZE));
+  const daysSinceEpoch = Math.floor(Date.now() / (24 * 60 * 60 * 1000));
+  const batch = daysSinceEpoch % totalBatches;
+  const slice = all.slice(batch * CONCILIATION_BATCH_SIZE, (batch + 1) * CONCILIATION_BATCH_SIZE);
 
   let checked = 0;
   let found = 0;
   let reported = 0;
-  for (const order of (candidates ?? []) as { shopify_order_id: string; shopify_order_number: string | null; tracking_code: string }[]) {
+  for (const order of slice) {
     checked += 1;
     try {
       const diff = await fetchConciliationDifference(config, order.tracking_code);
@@ -257,6 +278,6 @@ export async function syncShippingCostDifferences(
     }
   }
 
-  log({ checked, found, reported }, "conciliation_sync_completed");
-  return { checked, found, reported };
+  log({ checked, found, reported, totalCandidates, batch, totalBatches }, "conciliation_sync_completed");
+  return { checked, found, reported, totalCandidates, batch, totalBatches };
 }

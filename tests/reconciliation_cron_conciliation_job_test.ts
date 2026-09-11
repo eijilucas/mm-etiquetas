@@ -34,7 +34,7 @@ Deno.test("job=melhorenvio_conciliation runs the conciliation sync, not the defa
     const res = await handleReconciliationCron(conciliationCronRequest(), { config, supabase: fake as any });
     assertEquals(res.status, 200);
     const body = await res.json();
-    assertEquals(body, { checked: 0, found: 0, reported: 0 });
+    assertEquals(body, { checked: 0, found: 0, reported: 0, totalCandidates: 0, batch: 0, totalBatches: 1 });
   } finally {
     globalThis.fetch = original;
   }
