@@ -5,3 +5,7 @@ dist/
 coverage/
 .vercel
 supabase/.temp
+
+# Exports pontuais com dados de cliente (nome/endereço) puxados da Melhor
+# Envio pra reconciliação manual -- nunca deve ir pro repo.
+me_orders_*.json
