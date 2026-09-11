@@ -353,6 +353,22 @@ export async function fetchOrderCostByMelhorEnvioId(
   return { price: order.price, conciliationValue };
 }
 
+// Raw, unfiltered passthrough to GET /me/orders -- for the mental-lucro-
+// liquido pre-integration export (2026-09-11): orders purchased before this
+// system existed (Jul-mid Aug 2026) have no local row at all here to match
+// against, so the export has to come straight from Melhor Envio's own order
+// list, one page at a time (never looped inside the function -- see the
+// caller in reconciliation-cron for why). No shape assumed or filtered here
+// on purpose: the raw response is what's needed to pick a matching key and
+// confirm the real `status` values before committing to a filter.
+export async function fetchOrdersPageRaw(config: AppConfig, params: { status?: string; page?: number }): Promise<unknown> {
+  const query = new URLSearchParams();
+  if (params.status) query.set("status", params.status);
+  if (params.page) query.set("page", String(params.page));
+  const qs = query.toString();
+  return meFetch<unknown>(config, `/me/orders${qs ? `?${qs}` : ""}`, { method: "GET" });
+}
+
 export function buildFromAddress(config: AppConfig): MeAddress {
   const from = config.melhorEnvio.from;
   return {

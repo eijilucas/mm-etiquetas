@@ -11,6 +11,7 @@ import {
   backfillShippingPrices,
   backfillLabelCosts,
 } from "../_shared/reconciliation.ts";
+import { fetchOrdersPageRaw } from "../_shared/melhorenvio.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
 export interface Deps {
@@ -70,15 +71,35 @@ async function releaseLock(supabase: SupabaseClient, name: string): Promise<void
 // 01/07/2026" (as requested) resolves to when the caller doesn't pass one.
 const LABEL_COST_BACKFILL_DEFAULT_SINCE = "2026-07-01T00:00:00Z";
 
-async function readJobBody(req: Request): Promise<{ job: string; offset: number; since: string }> {
+async function readJobBody(
+  req: Request,
+): Promise<{ job: string; offset: number; since: string; status?: string; page: number }> {
   try {
     const body = await req.clone().json();
     const job = typeof body?.job === "string" ? body.job : "reconciliation";
     const offset = Number.isInteger(body?.offset) && body.offset >= 0 ? body.offset : 0;
     const since = typeof body?.since === "string" && body.since ? body.since : LABEL_COST_BACKFILL_DEFAULT_SINCE;
-    return { job, offset, since };
+    const status = typeof body?.status === "string" && body.status ? body.status : undefined;
+    const page = Number.isInteger(body?.page) && body.page > 0 ? body.page : 1;
+    return { job, offset, since, status, page };
   } catch {
-    return { job: "reconciliation", offset: 0, since: LABEL_COST_BACKFILL_DEFAULT_SINCE };
+    return { job: "reconciliation", offset: 0, since: LABEL_COST_BACKFILL_DEFAULT_SINCE, page: 1 };
+  }
+}
+
+// Raw, single-page passthrough to Melhor Envio's own order list -- not
+// looped, not paginated internally: the caller pages manually (status +
+// page in the body) so each invocation is exactly one Melhor Envio API
+// call, same "never loop expensive work inside one invocation" lesson as
+// every other job here. On demand only, no lock/schedule -- see
+// fetchOrdersPageRaw in melhorenvio.ts for why this exists.
+async function runOrdersExportJob(config: AppConfig, status: string | undefined, page: number): Promise<Response> {
+  try {
+    const raw = await fetchOrdersPageRaw(config, { status, page });
+    return new Response(JSON.stringify({ raw }), { status: 200, headers: { "Content-Type": "application/json" } });
+  } catch (error) {
+    console.log(JSON.stringify({ level: "error", err: String(error), msg: "orders_export_failed" }));
+    return new Response(JSON.stringify({ error: "internal_error" }), { status: 500, headers: { "Content-Type": "application/json" } });
   }
 }
 
@@ -162,12 +183,15 @@ export async function handleReconciliationCron(req: Request, deps: Deps = {}): P
 
   const supabase = deps.supabase ?? createServiceClient(config);
 
-  const { job, offset, since } = await readJobBody(req);
+  const { job, offset, since, status, page } = await readJobBody(req);
   if (job === "melhorenvio_conciliation") {
     return runConciliationJob(supabase, config);
   }
   if (job === "melhorenvio_valor_frete_backfill") {
     return runValorFreteBackfillJob(supabase, config, offset);
+  }
+  if (job === "melhorenvio_orders_export") {
+    return runOrdersExportJob(config, status, page);
   }
   if (job === "melhorenvio_label_cost_backfill") {
     return runLabelCostBackfillJob(supabase, config, offset, since);
