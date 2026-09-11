@@ -278,6 +278,51 @@ export async function fetchAccountBalance(config: AppConfig): Promise<number | n
   }
 }
 
+// Undocumented shape, confirmed against a real response 2026-09-10 (see
+// git history for the probe that pulled it): GET /me/orders/search?q=
+// returns a page of orders whose `conciliation` sub-object carries the
+// post-postagem reweigh/dimension adjustment ("débito de conferência" in
+// ME's own panel, under Financeiro > Diferenças) — `value` (BRL) and
+// `type` ("debit": ME charges more; presumably "credit" for the reverse,
+// unconfirmed live). `q` is a fuzzy search (tracking/protocol/id/document),
+// so results are filtered down to an exact `tracking` match before use.
+interface MeConciliationOrderItem {
+  tracking?: string;
+  conciliation?: {
+    value?: number;
+    type?: string;
+  } | null;
+}
+
+interface MeOrderSearchResponse {
+  data?: MeConciliationOrderItem[];
+}
+
+// Net conference-debit difference (BRL) for one shipment, or null if there's
+// no order matching this tracking code at all. Debits add, credits subtract
+// (so a corrected-down reweigh nets negative) — callers decide what to do
+// with a zero/negative/null result. Best-effort at the call-site: this
+// throws on a real API/network failure same as every other melhorenvio.ts
+// function, so a caller looping over many tracking codes needs its own
+// try/catch per iteration to not let one lookup abort the batch.
+export async function fetchConciliationDifference(config: AppConfig, trackingCode: string): Promise<number | null> {
+  const body = await meFetch<MeOrderSearchResponse>(config, `/me/orders/search?q=${encodeURIComponent(trackingCode)}`, {
+    method: "GET",
+  });
+  const matches = (body?.data ?? []).filter((order) => order.tracking === trackingCode);
+  if (matches.length === 0) return null;
+
+  let net = 0;
+  let sawConciliation = false;
+  for (const order of matches) {
+    const value = order.conciliation?.value;
+    if (typeof value !== "number" || !Number.isFinite(value) || value === 0) continue;
+    sawConciliation = true;
+    net += order.conciliation?.type === "credit" ? -value : value;
+  }
+  return sawConciliation ? net : null;
+}
+
 export function buildFromAddress(config: AppConfig): MeAddress {
   const from = config.melhorEnvio.from;
   return {

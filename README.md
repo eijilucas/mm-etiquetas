@@ -116,6 +116,31 @@ Sem isso, o job agendado no `pg_cron` roda a cada 15 minutos mas nao faz nada (a
 `0002_pg_cron.sql` evita o POST ate essas configuracoes existirem, ou o job nem chega a existir
 depois do `unschedule` acima).
 
+### Passo manual opcional: cron diario de conciliacao Melhor Envio -> lucro-liquido
+
+So necessario se `LUCRO_LIQUIDO_FUNCTIONS_URL`/`LUCRO_LIQUIDO_CALLBACK_SECRET` estiverem
+configurados (ver `_shared/lucroLiquidoCallback.ts`). Roda uma vez por dia, na mesma function
+`reconciliation-cron`, so que com um corpo diferente (ver `syncShippingCostDifferences` em
+`_shared/reconciliation.ts` e `0012_melhorenvio_conciliation_cron.sql`). Rode no SQL Editor,
+substituindo `<project-ref>` e `<CRON_SECRET>`:
+
+```sql
+insert into cron_locks (name, running_since) values ('melhorenvio_conciliation', null)
+  on conflict (name) do nothing;
+
+select cron.schedule(
+  'melhorenvio-conciliation-daily',
+  '0 6 * * *',
+  $job$
+  select net.http_post(
+    url := 'https://<project-ref>.supabase.co/functions/v1/reconciliation-cron',
+    headers := jsonb_build_object('Content-Type', 'application/json', 'x-cron-secret', '<CRON_SECRET>'),
+    body := '{"job": "melhorenvio_conciliation"}'::jsonb
+  );
+  $job$
+);
+```
+
 ## Configurando o app na Shopify
 
 Cada loja Shopify e configurada **separadamente** — webhooks da Shopify sao por loja, e cada uma

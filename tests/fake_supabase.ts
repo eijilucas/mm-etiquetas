@@ -13,6 +13,7 @@ type Filter =
   | { type: "neq"; col: string; value: unknown }
   | { type: "in"; col: string; values: unknown[] }
   | { type: "lt"; col: string; value: unknown }
+  | { type: "gte"; col: string; value: unknown }
   | { type: "is"; col: string; value: unknown }
   | { type: "not_is"; col: string; value: unknown }
   | { type: "or"; conditions: OrCondition[] };
@@ -23,6 +24,7 @@ function matches(row: Row, filters: Filter[]): boolean {
     if (f.type === "neq" && row[f.col] === f.value) return false;
     if (f.type === "in" && !f.values.includes(row[f.col])) return false;
     if (f.type === "lt" && !(String(row[f.col]) < String(f.value))) return false;
+    if (f.type === "gte" && !(String(row[f.col]) >= String(f.value))) return false;
     // Mirrors Postgres IS NULL semantics: undefined (never set) counts as null too.
     if (f.type === "is" && !(f.value === null ? row[f.col] == null : row[f.col] === f.value)) return false;
     if (f.type === "not_is" && (f.value === null ? row[f.col] == null : row[f.col] === f.value)) return false;
@@ -98,6 +100,11 @@ class FakeQueryBuilder implements PromiseLike<QueryResult> {
 
   lt(col: string, value: unknown): this {
     this.#filters.push({ type: "lt", col, value });
+    return this;
+  }
+
+  gte(col: string, value: unknown): this {
+    this.#filters.push({ type: "gte", col, value });
     return this;
   }
 

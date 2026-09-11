@@ -16,10 +16,19 @@ function log(fields: Record<string, unknown>, msg: string) {
 // A function do lado de lá vai com verify_jwt = false — o HMAC no header
 // X-Signature (SHA-256 hex do corpo cru) é a única autenticação, por isso
 // não manda Authorization.
-export async function sendShippingCostCallback(
-  config: AppConfig,
-  body: { shopify_order_id: string; valor_frete: number; order_number: string | null },
-): Promise<void> {
+//
+// valor_frete e diferenca_frete são independentes: cada chamador manda só o
+// que tem (reportShippingCost manda só valor_frete; reportShippingCostDifference,
+// só diferenca_frete) — JSON.stringify já omite o campo ausente sozinho, o
+// lado de lá sobrescreve só o que veio no corpo.
+export interface ShippingCostCallbackBody {
+  shopify_order_id: string;
+  order_number: string | null;
+  valor_frete?: number;
+  diferenca_frete?: number;
+}
+
+export async function sendShippingCostCallback(config: AppConfig, body: ShippingCostCallbackBody): Promise<void> {
   const { url, secret } = config.lucroLiquidoCallback;
   if (!url || !secret) {
     log({ shopifyOrderId: body.shopify_order_id }, "lucro_liquido_callback_not_configured_skipping");
@@ -71,5 +80,21 @@ export async function reportShippingCost(
     shopify_order_id: order.shopify_order_id,
     valor_frete: order.shipping_price,
     order_number: order.shopify_order_number,
+  });
+}
+
+// Chamado pelo cron diário de conciliação (syncShippingCostDifferences em
+// reconciliation.ts) — diferenca é o total ACUMULADO de diferença daquele
+// pedido (não um delta), o lado de lá sobrescreve o campo em vez de somar.
+// Manda só diferenca_frete, nunca valor_frete (esses dois nunca vêm juntos
+// nesse cron).
+export async function reportShippingCostDifference(
+  config: AppConfig,
+  order: { shopify_order_id: string; shopify_order_number: string | null; diferenca_frete: number },
+): Promise<void> {
+  await sendShippingCostCallback(config, {
+    shopify_order_id: order.shopify_order_id,
+    order_number: order.shopify_order_number,
+    diferenca_frete: order.diferenca_frete,
   });
 }

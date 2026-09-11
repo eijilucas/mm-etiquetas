@@ -3,8 +3,9 @@ import type { AppConfig } from "./config.ts";
 import { fetchPaidUnfulfilledOrders, mapShopifyOrderToCandidate } from "./shopify.ts";
 import { upsertPendingCandidate } from "./db.ts";
 import { sendAlert, runShippingPipeline, TRACKING_NOT_YET_AVAILABLE_ERROR } from "./pipeline.ts";
-import { fetchTrackingBatch, POSTED_ME_STATUSES } from "./melhorenvio.ts";
+import { fetchTrackingBatch, fetchConciliationDifference, POSTED_ME_STATUSES } from "./melhorenvio.ts";
 import { reportExternalStageChangeForIds } from "./integrationCallback.ts";
+import { reportShippingCostDifference } from "./lucroLiquidoCallback.ts";
 import { sleep } from "./retry.ts";
 
 // Mesmo motivo do stagger em orders-api/index.ts (approve em lote): mesmo
@@ -12,6 +13,16 @@ import { sleep } from "./retry.ts";
 // rajada de chamadas de compra pra Melhor Envio quando tem vários pedidos
 // travados no mesmo tick do cron.
 const RETRY_STALLED_STAGGER_MS = 1200;
+
+// Mesma lógica de stagger, pro loop de conciliação (potencialmente uma
+// centena+ de chamadas de busca por rastreio pra Melhor Envio numa rodada).
+const CONCILIATION_STAGGER_MS = 600;
+
+// Sem coluna pra marcar "já sincronizei esse pedido hoje" (nenhuma migração
+// nova é possível nesse ambiente — ver commit message), então cada rodada
+// reconsulta a Melhor Envio pra TODO pedido dentro dessa janela de volta.
+// 60 dias cobre a demora típica de conferência de postagem com folga.
+const CONCILIATION_LOOKBACK_DAYS = 60;
 
 function log(fields: Record<string, unknown>, msg: string) {
   console.log(JSON.stringify({ msg, ...fields }));
@@ -197,4 +208,60 @@ export async function checkStuckOrders(supabase: SupabaseClient, config: AppConf
       `[mm-etiquetas] Pedido ${order.shopify_order_number ?? order.shopify_order_id} travado em "${order.status}" ha mais de ${config.alerts.stuckHours}h. Ultimo erro: ${order.last_error ?? "n/a"}`,
     );
   }
+}
+
+// Roda uma vez por dia (ver o job "melhorenvio_conciliation" em
+// reconciliation-cron/index.ts) — puxa da Melhor Envio o débito/crédito de
+// conferência de postagem (reajuste de peso/dimensão, tela "Diferenças" do
+// financeiro da ME) de todo pedido não-externo com rastreio, dentro da
+// janela de CONCILIATION_LOOKBACK_DAYS, e empurra o total líquido pro
+// mental-lucro-liquido via reportShippingCostDifference. Pedido externo fica
+// de fora pelo mesmo motivo do reportShippingCost em runShippingPipeline:
+// shopify_order_id ali é o uuid do Vendas Externas, não um id Shopify.
+//
+// Sem persistência de "já processei isso hoje" (ver CONCILIATION_LOOKBACK_DAYS
+// acima), então isso reconsulta a Melhor Envio pra cada pedido da janela
+// toda vez que roda — best-effort por pedido: uma falha de rede/API num
+// rastreio não pode abortar o resto do lote.
+export async function syncShippingCostDifferences(
+  supabase: SupabaseClient,
+  config: AppConfig,
+): Promise<{ checked: number; found: number; reported: number }> {
+  log({}, "conciliation_sync_start");
+  const since = new Date(Date.now() - CONCILIATION_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const { data: candidates, error } = await supabase
+    .from("orders_shipping")
+    .select("shopify_order_id, shopify_order_number, tracking_code")
+    .neq("store_key", "external")
+    .not("tracking_code", "is", null)
+    .gte("updated_at", since);
+  if (error) throw error;
+
+  let checked = 0;
+  let found = 0;
+  let reported = 0;
+  for (const order of (candidates ?? []) as { shopify_order_id: string; shopify_order_number: string | null; tracking_code: string }[]) {
+    checked += 1;
+    try {
+      const diff = await fetchConciliationDifference(config, order.tracking_code);
+      if (diff != null && diff !== 0) {
+        found += 1;
+        await reportShippingCostDifference(config, {
+          shopify_order_id: order.shopify_order_id,
+          shopify_order_number: order.shopify_order_number,
+          diferenca_frete: diff,
+        });
+        reported += 1;
+      }
+    } catch (err) {
+      log(
+        { shopifyOrderId: order.shopify_order_id, trackingCode: order.tracking_code, err: String(err), level: "error" },
+        "conciliation_sync_order_failed",
+      );
+    }
+    await sleep(CONCILIATION_STAGGER_MS);
+  }
+
+  log({ checked, found, reported }, "conciliation_sync_completed");
+  return { checked, found, reported };
 }

@@ -2,7 +2,13 @@ import { loadConfig } from "../_shared/config.ts";
 import type { AppConfig } from "../_shared/config.ts";
 import { requireCronSecret } from "../_shared/auth.ts";
 import { createServiceClient } from "../_shared/db.ts";
-import { runReconciliation, checkStuckOrders, syncPostedOrders, retryStalledTracking } from "../_shared/reconciliation.ts";
+import {
+  runReconciliation,
+  checkStuckOrders,
+  syncPostedOrders,
+  retryStalledTracking,
+  syncShippingCostDifferences,
+} from "../_shared/reconciliation.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
 export interface Deps {
@@ -15,6 +21,78 @@ export interface Deps {
 // that crashed without releasing the lock self-heals quickly given the
 // schedule is now every 1 minute.
 const CRON_LOCK_STALE_MINUTES = 5;
+
+// The conciliation job (see below) is a different shape entirely -- one
+// request per candidate tracking code, staggered, so a real run with a few
+// hundred candidates legitimately takes minutes, not seconds.
+const CONCILIATION_LOCK_STALE_MINUTES = 30;
+
+// Claims a cron_locks row before doing any work, so a slow cycle still in
+// flight when the next tick fires can't run concurrently with itself and
+// double up API calls. Shared by both jobs below, each with its own row
+// name/staleness so they never block each other.
+async function claimLock(
+  supabase: SupabaseClient,
+  name: string,
+  staleMinutes: number,
+): Promise<boolean> {
+  const staleBefore = new Date(Date.now() - staleMinutes * 60 * 1000).toISOString();
+  const { data: claimed, error } = await supabase
+    .from("cron_locks")
+    .update({ running_since: new Date().toISOString() })
+    .eq("name", name)
+    .or(`running_since.is.null,running_since.lt.${staleBefore}`)
+    .select("*");
+  if (error) throw error;
+  return !!claimed && claimed.length > 0;
+}
+
+async function releaseLock(supabase: SupabaseClient, name: string): Promise<void> {
+  try {
+    await supabase.from("cron_locks").update({ running_since: null }).eq("name", name);
+  } catch (err) {
+    console.log(JSON.stringify({ level: "error", err: String(err), name, msg: "cron_lock_release_failed" }));
+  }
+}
+
+// pg_net posts an empty body for the existing every-1-minute reconciliation
+// job. The daily conciliation job (one-off SQL, see
+// supabase/migrations/0012_melhorenvio_conciliation_cron.sql) posts to the
+// exact same URL with `{"job": "melhorenvio_conciliation"}` instead -- one
+// function, one deploy target, matching the "one fewer moving cron piece"
+// choice already made for the stuck-order alert above. A malformed/empty
+// body (or a parse failure) always falls through to the default job.
+async function readJob(req: Request): Promise<string> {
+  try {
+    const body = await req.clone().json();
+    return typeof body?.job === "string" ? body.job : "reconciliation";
+  } catch {
+    return "reconciliation";
+  }
+}
+
+// Runs once a day (the job's pg_cron schedule, not a code-level check here).
+// No cron_lock-guarded overlap with the reconciliation job -- separate lock
+// row, separate schedule -- so a slow run of one never delays the other.
+async function runConciliationJob(supabase: SupabaseClient, config: AppConfig): Promise<Response> {
+  const acquired = await claimLock(supabase, "melhorenvio_conciliation", CONCILIATION_LOCK_STALE_MINUTES);
+  if (!acquired) {
+    console.log(JSON.stringify({ msg: "conciliation_cron_skipped_already_running" }));
+    return new Response(JSON.stringify({ skipped: true, reason: "already_running" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  try {
+    const result = await syncShippingCostDifferences(supabase, config);
+    return new Response(JSON.stringify(result), { status: 200, headers: { "Content-Type": "application/json" } });
+  } catch (error) {
+    console.log(JSON.stringify({ level: "error", err: String(error), msg: "conciliation_cron_failed" }));
+    return new Response(JSON.stringify({ error: "internal_error" }), { status: 500, headers: { "Content-Type": "application/json" } });
+  } finally {
+    await releaseLock(supabase, "melhorenvio_conciliation");
+  }
+}
 
 // Invoked by pg_cron (see README, "Passo manual obrigatorio pos-deploy")
 // every 1 minute. Gated by CRON_SECRET so it can't be triggered by a random
@@ -32,21 +110,18 @@ export async function handleReconciliationCron(req: Request, deps: Deps = {}): P
 
   const supabase = deps.supabase ?? createServiceClient(config);
 
-  // Claims the run before doing any work, so a slow cycle still in flight
-  // when the next minute's tick fires can't run concurrently with it and
-  // double up API calls to Shopify/Melhor Envio.
-  const staleBefore = new Date(Date.now() - CRON_LOCK_STALE_MINUTES * 60 * 1000).toISOString();
-  const { data: claimed, error: claimError } = await supabase
-    .from("cron_locks")
-    .update({ running_since: new Date().toISOString() })
-    .eq("name", "reconciliation")
-    .or(`running_since.is.null,running_since.lt.${staleBefore}`)
-    .select("*");
-  if (claimError) {
+  if ((await readJob(req)) === "melhorenvio_conciliation") {
+    return runConciliationJob(supabase, config);
+  }
+
+  let acquired: boolean;
+  try {
+    acquired = await claimLock(supabase, "reconciliation", CRON_LOCK_STALE_MINUTES);
+  } catch (claimError) {
     console.log(JSON.stringify({ level: "error", err: String(claimError), msg: "cron_lock_claim_failed" }));
     return new Response(JSON.stringify({ error: "internal_error" }), { status: 500, headers: { "Content-Type": "application/json" } });
   }
-  if (!claimed || claimed.length === 0) {
+  if (!acquired) {
     console.log(JSON.stringify({ msg: "reconciliation_cron_skipped_already_running" }));
     return new Response(JSON.stringify({ skipped: true, reason: "already_running" }), {
       status: 200,
@@ -81,11 +156,7 @@ export async function handleReconciliationCron(req: Request, deps: Deps = {}): P
       headers: { "Content-Type": "application/json" },
     });
   } finally {
-    try {
-      await supabase.from("cron_locks").update({ running_since: null }).eq("name", "reconciliation");
-    } catch (err) {
-      console.log(JSON.stringify({ level: "error", err: String(err), msg: "cron_lock_release_failed" }));
-    }
+    await releaseLock(supabase, "reconciliation");
   }
 }
 
