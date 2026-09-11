@@ -21,8 +21,16 @@ function log(fields: Record<string, unknown>, msg: string) {
 // que tem (reportShippingCost manda só valor_frete; reportShippingCostDifference,
 // só diferenca_frete) — JSON.stringify já omite o campo ausente sozinho, o
 // lado de lá sobrescreve só o que veio no corpo.
+//
+// shopify_order_id e external_order_id também são mutuamente exclusivos
+// (2026-09-11, acordado com o lado do lucro-liquido): pedido normal manda
+// shopify_order_id; pedido de Vendas Externas (store_key "external" aqui —
+// carrega o uuid do Vendas Externas no campo shopify_order_id do nosso
+// schema, não um id Shopify de verdade) manda external_order_id em vez
+// disso, nunca os dois juntos.
 export interface ShippingCostCallbackBody {
-  shopify_order_id: string;
+  shopify_order_id?: string;
+  external_order_id?: string;
   order_number: string | null;
   valor_frete?: number;
   diferenca_frete?: number;
@@ -30,8 +38,9 @@ export interface ShippingCostCallbackBody {
 
 export async function sendShippingCostCallback(config: AppConfig, body: ShippingCostCallbackBody): Promise<void> {
   const { url, secret } = config.lucroLiquidoCallback;
+  const orderIdForLog = body.shopify_order_id ?? body.external_order_id;
   if (!url || !secret) {
-    log({ shopifyOrderId: body.shopify_order_id }, "lucro_liquido_callback_not_configured_skipping");
+    log({ orderId: orderIdForLog }, "lucro_liquido_callback_not_configured_skipping");
     return;
   }
 
@@ -55,29 +64,33 @@ export async function sendShippingCostCallback(config: AppConfig, body: Shipping
       },
       { label: "lucro_liquido_callback", attempts: 3 },
     );
-    log({ shopifyOrderId: body.shopify_order_id }, "lucro_liquido_callback_succeeded");
+    log({ orderId: orderIdForLog }, "lucro_liquido_callback_succeeded");
   } catch (err) {
     log(
-      { shopifyOrderId: body.shopify_order_id, err: String(err) },
+      { orderId: orderIdForLog, err: String(err) },
       "lucro_liquido_callback_failed_permanently",
     );
   }
 }
 
 // Chamado no ponto de saída de runShippingPipeline. Só empurra pedido que
-// já tem custo real de etiqueta (shipping_price) e que NÃO é de Vendas
-// Externas — pedido externo carrega o uuid do Vendas Externas em
-// shopify_order_id, não o id numérico da Shopify, então não serve pra
-// casar no lucro-liquido e fica de fora dessa ponte. Roda de novo a cada
-// reprocess/retry; o lado de lá faz upsert por shopify_order_id.
+// já tem custo real de etiqueta (shipping_price). Pedido de Vendas Externas
+// (store_key "external") manda external_order_id em vez de shopify_order_id
+// -- até 2026-09-11 esses ficavam de fora inteiramente (o campo
+// shopify_order_id ali é o uuid do Vendas Externas, não um id Shopify de
+// verdade), mas o lado do lucro-liquido passou a aceitar essa segunda chave
+// e soma o frete externo numa view separada da DRE. Roda de novo a cada
+// reprocess/retry; o lado de lá faz upsert por shopify_order_id OU
+// external_order_id, o que vier no corpo.
 export async function reportShippingCost(
   config: AppConfig,
   order: Pick<OrderShippingRow, "store_key" | "shopify_order_id" | "shopify_order_number" | "shipping_price">,
 ): Promise<void> {
-  if (order.store_key === "external") return;
   if (order.shipping_price == null) return;
   await sendShippingCostCallback(config, {
-    shopify_order_id: order.shopify_order_id,
+    ...(order.store_key === "external"
+      ? { external_order_id: order.shopify_order_id }
+      : { shopify_order_id: order.shopify_order_id }),
     valor_frete: order.shipping_price,
     order_number: order.shopify_order_number,
   });

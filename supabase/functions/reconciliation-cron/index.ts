@@ -9,6 +9,7 @@ import {
   retryStalledTracking,
   syncShippingCostDifferences,
   backfillShippingPrices,
+  backfillExternalShippingPrices,
   backfillLabelCosts,
 } from "../_shared/reconciliation.ts";
 import { fetchOrdersPageRaw } from "../_shared/melhorenvio.ts";
@@ -93,6 +94,27 @@ async function readJobBody(
 // call, same "never loop expensive work inside one invocation" lesson as
 // every other job here. On demand only, no lock/schedule -- see
 // fetchOrdersPageRaw in melhorenvio.ts for why this exists.
+// Pedido de Vendas Externas (store_key "external") ficava inteiramente de
+// fora da ponte pro lucro-liquido até 2026-09-11 -- ver
+// backfillExternalShippingPrices em reconciliation.ts. `since` é
+// obrigatório de fato aqui (sem default específico pro caso externo, ver
+// LABEL_COST_BACKFILL_DEFAULT_SINCE acima que é de outro job): passa no
+// corpo o início do período que falta, ex. `{"since": "2026-09-02T00:00:00Z"}`.
+async function runExternalValorFreteBackfillJob(
+  supabase: SupabaseClient,
+  config: AppConfig,
+  offset: number,
+  since: string,
+): Promise<Response> {
+  try {
+    const result = await backfillExternalShippingPrices(supabase, config, offset, since);
+    return new Response(JSON.stringify(result), { status: 200, headers: { "Content-Type": "application/json" } });
+  } catch (error) {
+    console.log(JSON.stringify({ level: "error", err: String(error), msg: "external_valor_frete_backfill_failed" }));
+    return new Response(JSON.stringify({ error: "internal_error" }), { status: 500, headers: { "Content-Type": "application/json" } });
+  }
+}
+
 async function runOrdersExportJob(config: AppConfig, status: string | undefined, page: number): Promise<Response> {
   try {
     const raw = await fetchOrdersPageRaw(config, { status, page });
@@ -189,6 +211,9 @@ export async function handleReconciliationCron(req: Request, deps: Deps = {}): P
   }
   if (job === "melhorenvio_valor_frete_backfill") {
     return runValorFreteBackfillJob(supabase, config, offset);
+  }
+  if (job === "melhorenvio_external_valor_frete_backfill") {
+    return runExternalValorFreteBackfillJob(supabase, config, offset, since);
   }
   if (job === "melhorenvio_orders_export") {
     return runOrdersExportJob(config, status, page);

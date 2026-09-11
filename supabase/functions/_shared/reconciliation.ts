@@ -340,6 +340,55 @@ export async function backfillShippingPrices(
   return { checked, reported, offset, limit, total, hasMore };
 }
 
+// Mesma ideia de backfillShippingPrices acima, mas pro lado espelhado:
+// pedido de Vendas Externas (store_key "external") sempre foi excluído
+// dessa ponte até 2026-09-11 -- o lado do lucro-liquido agora aceita
+// external_order_id como chave alternativa (ver ShippingCostCallbackBody em
+// lucroLiquidoCallback.ts), então isso empurra o valor_frete já existente
+// dos pedidos externos que já compraram etiqueta, sem reprocessar nada.
+export async function backfillExternalShippingPrices(
+  supabase: SupabaseClient,
+  config: AppConfig,
+  offset: number,
+  sinceIso: string,
+): Promise<{ checked: number; reported: number; offset: number; limit: number; total: number; hasMore: boolean }> {
+  const limit = CONCILIATION_BATCH_SIZE;
+  const { data, error, count } = await supabase
+    .from("orders_shipping")
+    .select("shopify_order_id, shopify_order_number, shipping_price", { count: "exact" })
+    .eq("store_key", "external")
+    .not("shipping_price", "is", null)
+    .gte("created_at", sinceIso)
+    .order("shopify_order_id", { ascending: true })
+    .range(offset, offset + limit - 1);
+  if (error) throw error;
+
+  const rows = (data ?? []) as { shopify_order_id: string; shopify_order_number: string | null; shipping_price: number }[];
+  let checked = 0;
+  let reported = 0;
+  for (const order of rows) {
+    checked += 1;
+    try {
+      await sendShippingCostCallback(config, {
+        external_order_id: order.shopify_order_id,
+        order_number: order.shopify_order_number,
+        valor_frete: order.shipping_price,
+      });
+      reported += 1;
+    } catch (err) {
+      log(
+        { externalOrderId: order.shopify_order_id, err: String(err), level: "error" },
+        "external_valor_frete_backfill_order_failed",
+      );
+    }
+  }
+
+  const total = count ?? offset + rows.length;
+  const hasMore = offset + rows.length < total;
+  log({ checked, reported, offset, limit, total, hasMore }, "external_valor_frete_backfill_batch_completed");
+  return { checked, reported, offset, limit, total, hasMore };
+}
+
 // Backfill maior que backfillShippingPrices acima: aquele só cobre pedido
 // que já tem shipping_price local (2026-09-11: 245 de 621 com etiqueta
 // comprada). Pedido comprado antes da coluna shipping_price existir tem ela

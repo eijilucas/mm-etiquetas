@@ -91,7 +91,7 @@ Deno.test("reportShippingCost: no-op silencioso quando LUCRO_LIQUIDO_CALLBACK_SE
   );
 });
 
-Deno.test("reportShippingCost: pula pedido externo (uuid no shopify_order_id, nao serve pro lucro-liquido)", async () => {
+Deno.test("reportShippingCost: pedido externo manda external_order_id em vez de shopify_order_id", async () => {
   await withEnv(
     {
       LUCRO_LIQUIDO_FUNCTIONS_URL: "https://lucro-liquido.supabase.co",
@@ -99,14 +99,19 @@ Deno.test("reportShippingCost: pula pedido externo (uuid no shopify_order_id, na
     },
     () =>
       withFetchMock(
-        () => new Response("{}", { status: 200 }),
+        () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
         async (calls) => {
           const config = loadConfig();
           await reportShippingCost(
             config,
             makeOrder({ store_key: "external", shopify_order_id: "b3b8c1e2-uuid" }),
           );
-          assertEquals(calls.length, 0);
+          assertEquals(calls.length, 1);
+          assertEquals(calls[0].body, {
+            external_order_id: "b3b8c1e2-uuid",
+            valor_frete: 27.9,
+            order_number: "3511",
+          });
         },
       ),
   );

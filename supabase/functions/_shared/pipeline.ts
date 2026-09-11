@@ -398,10 +398,12 @@ export async function runShippingPipeline(
   try {
     const finalOrder = await fetchOrder(supabase, orderShippingId);
     await reportExternalStageChange(config, finalOrder);
-    // Empurra o custo real da etiqueta pro mental-lucro-liquido. No-op pra
-    // pedido externo e pra pedido sem shipping_price (ver reportShippingCost).
-    // Idempotente do lado de lá (upsert por shopify_order_id), então rodar
-    // isso de novo a cada reprocess/retry é inofensivo.
+    // Empurra o custo real da etiqueta pro mental-lucro-liquido (pedido
+    // externo manda external_order_id em vez de shopify_order_id, ver
+    // reportShippingCost). No-op só pra pedido sem shipping_price ainda.
+    // Idempotente do lado de lá (upsert por shopify_order_id OU
+    // external_order_id), então rodar isso de novo a cada reprocess/retry é
+    // inofensivo.
     await reportShippingCost(config, finalOrder);
   } catch (err) {
     log({ orderShippingId, err: String(err), level: "error" }, "pipeline_stage_report_failed");
