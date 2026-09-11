@@ -14,10 +14,6 @@ import { sleep } from "./retry.ts";
 // travados no mesmo tick do cron.
 const RETRY_STALLED_STAGGER_MS = 1200;
 
-// Mesma lógica de stagger, pro loop de conciliação (potencialmente uma
-// centena+ de chamadas de busca por rastreio pra Melhor Envio numa rodada).
-const CONCILIATION_STAGGER_MS = 600;
-
 // Sem coluna pra marcar "já sincronizei esse pedido hoje" (nenhuma migração
 // nova é possível nesse ambiente — ver commit message), então cada rodada
 // reconsulta a Melhor Envio pra TODO pedido dentro dessa janela de volta.
@@ -259,7 +255,6 @@ export async function syncShippingCostDifferences(
         "conciliation_sync_order_failed",
       );
     }
-    await sleep(CONCILIATION_STAGGER_MS);
   }
 
   log({ checked, found, reported }, "conciliation_sync_completed");

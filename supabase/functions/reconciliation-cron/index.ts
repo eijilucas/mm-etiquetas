@@ -23,8 +23,9 @@ export interface Deps {
 const CRON_LOCK_STALE_MINUTES = 5;
 
 // The conciliation job (see below) is a different shape entirely -- one
-// request per candidate tracking code, staggered, so a real run with a few
-// hundred candidates legitimately takes minutes, not seconds.
+// sequential request per candidate tracking code, so a real run with a few
+// dozen+ candidates can legitimately take a while (each is a real network
+// round-trip to Melhor Envio).
 const CONCILIATION_LOCK_STALE_MINUTES = 30;
 
 // Claims a cron_locks row before doing any work, so a slow cycle still in
