@@ -278,6 +278,16 @@ export async function fetchAccountBalance(config: AppConfig): Promise<number | n
   }
 }
 
+// TEMPORARY diagnostic probe for the shipping-cost-callback "diferenca de
+// frete" investigation (2026-09-10) — GET /me/orders/search?q=<rastreio> is
+// undocumented (its `conciliation` object's exact field names for the
+// conference-debit value aren't published anywhere), so this exists only to
+// pull one real response and see the shape. Not meant to stay: delete this
+// export + the orders-api route calling it once the real cron is built.
+export async function fetchOrderConciliationProbe(config: AppConfig, trackingCode: string): Promise<unknown> {
+  return meFetch<unknown>(config, `/me/orders/search?q=${encodeURIComponent(trackingCode)}`, { method: "GET" });
+}
+
 export function buildFromAddress(config: AppConfig): MeAddress {
   const from = config.melhorEnvio.from;
   return {
