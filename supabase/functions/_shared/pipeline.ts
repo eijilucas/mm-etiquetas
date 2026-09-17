@@ -27,6 +27,18 @@ function log(fields: Record<string, unknown>, msg: string) {
   console.log(JSON.stringify({ msg, ...fields }));
 }
 
+// Melhor Envio hard-rejects any cart/checkout whose insurance_value exceeds
+// this on a non_commercial (declaracao de conteudo, no NF-e) shipment --
+// confirmed live via a real order stuck in "failed": "Melhor Envio API
+// error 422: E-CRT-0001: O valor segurado em envios não comerciais não pode
+// ser maior que R$ 1.000,00." This system never attaches an invoice (see
+// the `non_commercial: true` comment below), so every order is subject to
+// it -- previously insurance_value scaled unbounded with item count
+// (declaredValuePerItem * quantity), so any order with 4+ items (4 * R$250)
+// failed outright. Capping here means 4+-item orders ship under-insured
+// instead of not shipping at all.
+const MAX_NON_COMMERCIAL_INSURANCE_VALUE = 1000;
+
 // Shared with reconciliation.ts's retryStalledTracking, which auto-retries
 // exactly this failure (and only this one — every other failure reason
 // needs a human, retrying wouldn't fix an invalid CEP for example).
@@ -153,9 +165,10 @@ export async function buildCartPayload(config: AppConfig, order: OrderShippingRo
   // profile above — R$250/produto regardless of the real Shopify sale price,
   // which is what actually drives the auto-generated content declaration
   // (products[].unitary_value, see the `options` comment below). Insurance
-  // value is kept consistent with that same declared total.
+  // value is kept consistent with that same declared total, capped at
+  // MAX_NON_COMMERCIAL_INSURANCE_VALUE — see its comment for why.
   const declaredValuePerItem = config.melhorEnvio.declaredValuePerItem;
-  const insuranceValue = declaredValuePerItem * totalQuantity;
+  const insuranceValue = Math.min(declaredValuePerItem * totalQuantity, MAX_NON_COMMERCIAL_INSURANCE_VALUE);
 
   const shippingAddress = { ...(order.shipping_address as Record<string, unknown>) };
   if (!shippingAddress.document) {
@@ -233,7 +246,7 @@ export async function estimateShippingCost(config: AppConfig, order: OrderShippi
       },
       products: items.map((item) => ({ name: item.title, quantity: item.quantity, unitary_value: declaredValuePerItem })),
       volumes: [{ height: profile.heightCm, width: profile.widthCm, length: profile.lengthCm, weight: profile.weightKg }],
-      options: { insurance_value: declaredValuePerItem * totalQuantity },
+      options: { insurance_value: Math.min(declaredValuePerItem * totalQuantity, MAX_NON_COMMERCIAL_INSURANCE_VALUE) },
     });
 
     const allowed = config.melhorEnvio.allowedServiceIds;

@@ -249,6 +249,27 @@ Deno.test("declares a fixed R$250/item value (not the real Shopify price) for bo
   assertEquals(cartRequestBody.options.insurance_value, 750); // 250 * 3 total items, not the real R$1299.70
 });
 
+// Regression: Melhor Envio hard-rejects a non_commercial cart/checkout whose
+// insurance_value exceeds R$1.000 ("E-CRT-0001") -- with no cap, 4+ items
+// (4 * R$250) always failed outright. See MAX_NON_COMMERCIAL_INSURANCE_VALUE.
+Deno.test("caps insurance_value at R$1.000 for 4+ items instead of letting it scale unbounded and fail at Melhor Envio", async () => {
+  const fake = makeFakeSupabase();
+  const order = makeApprovedOrder();
+  order.items = [
+    { shopifyLineItemId: 1, title: "Camiseta", variantTitle: null, sku: "SP-1", quantity: 5, unitPrice: "89.90", grams: 200 },
+  ];
+  fake.table("orders_shipping").push(order);
+
+  let cartRequestBody: any;
+  await withFetchMock((url, init) => {
+    if (url.includes("/me/cart")) cartRequestBody = JSON.parse(init.body as string);
+    return meAndShopifyHandler()(url, init);
+    // deno-lint-ignore no-explicit-any
+  }, () => runShippingPipeline(fake as any, config, "order-happy-1"));
+
+  assertEquals(cartRequestBody.options.insurance_value, 1000); // 250 * 5 = 1250, capped at 1000
+});
+
 Deno.test("reports the label to mental-madness-estoque right after it's generated, without blocking the pipeline if that call fails", async () => {
   const fake = makeFakeSupabase();
   fake.table("orders_shipping").push(makeApprovedOrder());
