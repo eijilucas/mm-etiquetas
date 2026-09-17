@@ -715,45 +715,10 @@ async function loadProcessing() {
 }
 
 let archivedOrders = [];
-let archivedStoreFilter = "all";
-
-function renderArchivedStoreFilter() {
-  const container = document.getElementById("archivedStoreFilter");
-  const keys = Array.from(new Set(archivedOrders.map((order) => order.storeKey))).sort((a, b) =>
-    storeLabel(a).localeCompare(storeLabel(b)),
-  );
-
-  if (keys.length === 0) {
-    container.innerHTML = "";
-    return;
-  }
-
-  const countFor = (key) =>
-    key === "all" ? archivedOrders.length : archivedOrders.filter((order) => order.storeKey === key).length;
-
-  container.innerHTML = [{ key: "all", label: "Todos" }, ...keys.map((key) => ({ key, label: storeLabel(key) }))]
-    .map(
-      ({ key, label }) =>
-        `<button class="store-filter-btn${archivedStoreFilter === key ? " active" : ""}" data-store="${key}">${label} (${countFor(key)})</button>`,
-    )
-    .join("");
-
-  container.querySelectorAll(".store-filter-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      archivedStoreFilter = btn.dataset.store;
-      renderArchivedStoreFilter();
-      renderArchivedRows();
-    });
-  });
-}
 
 async function loadArchived() {
   const { orders } = await api("/archived");
   archivedOrders = orders;
-  if (archivedStoreFilter !== "all" && !orders.some((order) => order.storeKey === archivedStoreFilter)) {
-    archivedStoreFilter = "all";
-  }
-  renderArchivedStoreFilter();
   renderArchivedRows();
   return orders;
 }
@@ -767,9 +732,7 @@ async function loadArchived() {
 function renderArchivedRows() {
   const tbody = document.getElementById("archivedTableBody");
   const empty = document.getElementById("archivedEmpty");
-  const storeFiltered =
-    archivedStoreFilter === "all" ? archivedOrders : archivedOrders.filter((order) => order.storeKey === archivedStoreFilter);
-  const orders = filterBySearch(storeFiltered, "archivedSearch");
+  const orders = filterBySearch(archivedOrders, "archivedSearch");
   tbody.innerHTML = "";
   empty.style.display = orders.length === 0 ? "block" : "none";
 
