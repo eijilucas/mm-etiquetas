@@ -527,9 +527,18 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
       if (!archivable.includes(order.status)) {
         return json({ error: `cannot archive order in status ${order.status}` }, 400);
       }
+      const rawBody = await req.text();
+      const reason = rawBody ? (() => {
+        try {
+          const parsed = JSON.parse(rawBody);
+          return typeof parsed?.reason === "string" && parsed.reason.trim() ? parsed.reason.trim() : null;
+        } catch {
+          return null;
+        }
+      })() : null;
       const { error } = await supabase
         .from("orders_shipping")
-        .update({ status: "archived", archived_at: new Date().toISOString(), archived_by: user.email })
+        .update({ status: "archived", archived_at: new Date().toISOString(), archived_by: user.email, archive_reason: reason })
         .eq("id", id);
       if (error) throw error;
       return json({ ok: true });
@@ -562,7 +571,7 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
             : "failed";
       const { error } = await supabase
         .from("orders_shipping")
-        .update({ status: restoredStatus, archived_at: null, archived_by: null })
+        .update({ status: restoredStatus, archived_at: null, archived_by: null, archive_reason: null })
         .eq("id", id);
       if (error) throw error;
       return json({ ok: true, status: restoredStatus });

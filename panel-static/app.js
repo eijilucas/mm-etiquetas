@@ -426,6 +426,7 @@ async function openAllLabels(orders) {
 let processingOrders = [];
 const selectedProcessing = new Set();
 let cancelTargetId = null;
+let archiveTargetId = null;
 let releasedStoreFilter = "all";
 
 // Same store-filter pill row as the Fila de aprovação, scoped to whichever
@@ -716,51 +717,44 @@ async function loadProcessing() {
 
 let archivedOrders = [];
 
+// Uma busca só (/archived já traz failed + held + archived juntos) alimenta
+// as duas abas — "Erros" (failed/held) e "Removidos" (archived) — que
+// costumavam ser uma única tabela misturada.
 async function loadArchived() {
   const { orders } = await api("/archived");
   archivedOrders = orders;
-  renderArchivedRows();
+  renderFailedRows();
+  renderRemovedRows();
   return orders;
 }
 
-// Três tipos de linha nessa aba:
-//  - "failed": pedido que deu erro. Ações: voltar pra fila (só se ainda não
-//    comprou frete), reprocessar, cancelar, remover.
-//  - "held": pedido em espera (sobrou de um Cancelar, ou de antes de a aba
-//    "Em espera" ser removida). Ações: voltar pra fila, remover.
-//  - "archived": pedido removido do painel. Ação: restaurar.
-function renderArchivedRows() {
-  const tbody = document.getElementById("archivedTableBody");
-  const empty = document.getElementById("archivedEmpty");
-  const orders = filterBySearch(archivedOrders, "archivedSearch");
+// Aba "Erros": pedido "failed" (deu erro de verdade) ou "held" (em espera,
+// sobra de um Cancelar ou de antes da aba "Em espera" ser removida). Ações:
+// voltar pra fila (failed sem frete comprado, ou held), reprocessar/cancelar
+// (só failed), remover (os dois).
+function renderFailedRows() {
+  const tbody = document.getElementById("failedTableBody");
+  const empty = document.getElementById("failedEmpty");
+  const failedAndHeld = archivedOrders.filter((order) => order.status === "failed" || order.status === "held");
+  const orders = filterBySearch(failedAndHeld, "failedSearch");
   tbody.innerHTML = "";
   empty.style.display = orders.length === 0 ? "block" : "none";
 
   for (const order of orders) {
-    const removed = order.status === "archived";
     const held = order.status === "held";
-    const when = removed ? order.archivedAt : held ? order.heldAt : order.updatedAt;
-    let actions;
-    if (removed) {
-      actions = `<button class="btn" data-restore="${order.id}">Restaurar</button>`;
-    } else if (held) {
-      actions = `
+    const when = held ? order.heldAt : order.updatedAt;
+    const actions = held
+      ? `
         <button class="btn" data-revert-held="${order.id}">Voltar p/ fila</button>
         <button class="btn danger" data-archive-err="${order.id}">Remover</button>
-      `;
-    } else {
-      actions = `
+      `
+      : `
         ${order.melhorEnvioOrderId ? "" : `<button class="btn" data-back-to-queue="${order.id}">Voltar p/ fila</button>`}
         <button class="btn" data-reprocess-err="${order.id}">Reprocessar</button>
         <button class="btn danger" data-cancel-err="${order.id}">Cancelar</button>
         <button class="btn danger" data-archive-err="${order.id}">Remover</button>
       `;
-    }
-    const situacaoHtml = removed
-      ? '<span class="pill">Removido</span>'
-      : held
-        ? '<span class="pill">Em espera</span>'
-        : pill("failed");
+    const situacaoHtml = held ? '<span class="pill">Em espera</span>' : pill("failed");
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${orderRefHtml(order)}</td>
@@ -770,7 +764,6 @@ function renderArchivedRows() {
       <td>${situacaoHtml}</td>
       <td class="error-text" title="${escapeAttr(order.lastError)}">${order.heldReason ?? (friendlyErrorMessage(order.lastError) || "-")}</td>
       <td class="nowrap">${formatDate(when)}</td>
-      <td>${removed ? (order.archivedBy ?? "-") : "-"}</td>
       <td class="col-action">${actions}</td>
     `;
     tbody.appendChild(tr);
@@ -786,23 +779,6 @@ function renderArchivedRows() {
         await refreshKpis();
       } catch (error) {
         await showAlert(`Erro ao voltar pra fila: ${friendlyErrorMessage(error.message)}`);
-        btn.disabled = false;
-      }
-    });
-  });
-
-  // Where a restored order lands (held / aguardando envio / externo / falhou)
-  // is inferred on the backend from fields /archive never touched — see the
-  // /restore route.
-  tbody.querySelectorAll("[data-restore]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      try {
-        await api(`/${btn.dataset.restore}/restore`, { method: "POST" });
-        await loadArchived();
-        await refreshKpis();
-      } catch (error) {
-        await showAlert(`Erro ao restaurar: ${friendlyErrorMessage(error.message)}`);
         btn.disabled = false;
       }
     });
@@ -846,15 +822,51 @@ function renderArchivedRows() {
   });
 
   tbody.querySelectorAll("[data-archive-err]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      archiveTargetId = btn.dataset.archiveErr;
+      document.getElementById("archiveReasonInput").value = "";
+      document.getElementById("archiveDialog").showModal();
+    });
+  });
+}
+
+// Aba "Removidos": só pedido "archived" (removido via botão Remover). Ação:
+// restaurar.
+function renderRemovedRows() {
+  const tbody = document.getElementById("archivedTableBody");
+  const empty = document.getElementById("archivedEmpty");
+  const removed = archivedOrders.filter((order) => order.status === "archived");
+  const orders = filterBySearch(removed, "archivedSearch");
+  tbody.innerHTML = "";
+  empty.style.display = orders.length === 0 ? "block" : "none";
+
+  for (const order of orders) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${orderRefHtml(order)}</td>
+      <td>${storeCell(order)}</td>
+      <td>${order.customerName ?? "-"}</td>
+      <td class="col-items items-list">${itemsSummaryExternalOnly(order)}</td>
+      <td>${order.archiveReason ?? "-"}</td>
+      <td class="nowrap">${formatDate(order.archivedAt)}</td>
+      <td>${order.archivedBy ?? "-"}</td>
+      <td class="col-action"><button class="btn" data-restore="${order.id}">Restaurar</button></td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  // Where a restored order lands (held / aguardando envio / externo / falhou)
+  // is inferred on the backend from fields /archive never touched — see the
+  // /restore route.
+  tbody.querySelectorAll("[data-restore]").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      if (!(await showConfirm("Remover esse pedido do painel? Ele para de aparecer nas outras abas (o historico continua salvo no banco). Nao cancela etiqueta nem estorna nada."))) return;
       btn.disabled = true;
       try {
-        await api(`/${btn.dataset.archiveErr}/archive`, { method: "POST" });
+        await api(`/${btn.dataset.restore}/restore`, { method: "POST" });
         await loadArchived();
         await refreshKpis();
       } catch (error) {
-        await showAlert(`Erro ao remover: ${friendlyErrorMessage(error.message)}`);
+        await showAlert(`Erro ao restaurar: ${friendlyErrorMessage(error.message)}`);
         btn.disabled = false;
       }
     });
@@ -1118,7 +1130,7 @@ function setupTabs() {
       if (btn.dataset.tab === "pending") loadPending();
       if (btn.dataset.tab === "released" || btn.dataset.tab === "posted") loadProcessing();
       if (btn.dataset.tab === "manual-tracking") loadManualTracking();
-      if (btn.dataset.tab === "archived") loadArchived();
+      if (btn.dataset.tab === "failed" || btn.dataset.tab === "archived") loadArchived();
     });
   });
 }
@@ -1213,6 +1225,25 @@ function setupCancelLabelDialog() {
   });
 }
 
+// Motivo é opcional aqui (diferente do Cancelar, que exige) — Remover é uma
+// ação mais leve (só tira da fila, não cancela etiqueta nem estorna nada),
+// então não faz sentido travar quem só quer limpar a tela sem escrever nada.
+function setupArchiveDialog() {
+  const dialog = document.getElementById("archiveDialog");
+  document.getElementById("archiveCloseBtn").addEventListener("click", () => dialog.close());
+  document.getElementById("archiveConfirmBtn").addEventListener("click", async () => {
+    const reason = document.getElementById("archiveReasonInput").value.trim();
+    try {
+      await api(`/${archiveTargetId}/archive`, { method: "POST", body: JSON.stringify({ reason }) });
+      dialog.close();
+      await loadArchived();
+      await refreshKpis();
+    } catch (error) {
+      await showAlert(`Erro ao remover: ${friendlyErrorMessage(error.message)}`);
+    }
+  });
+}
+
 function setupBulkPrint() {
   const btn = document.getElementById("bulkPrintBtn");
   btn.addEventListener("click", async () => {
@@ -1226,7 +1257,8 @@ function setupToolbar() {
   document.getElementById("pendingSearch").addEventListener("input", renderPendingRows);
   document.getElementById("releasedSearch").addEventListener("input", renderReleasedRows);
   document.getElementById("postedSearch").addEventListener("input", renderPostedRows);
-  document.getElementById("archivedSearch").addEventListener("input", renderArchivedRows);
+  document.getElementById("failedSearch").addEventListener("input", renderFailedRows);
+  document.getElementById("archivedSearch").addEventListener("input", renderRemovedRows);
 
   document.getElementById("selectAllReleasedBtn").addEventListener("click", () => {
     const checkboxes = document.querySelectorAll('#releasedTableBody input[type="checkbox"]');
@@ -1323,6 +1355,7 @@ function setupToolbar() {
   document.getElementById("refreshPendingBtn").addEventListener("click", loadPending);
   document.getElementById("refreshReleasedBtn").addEventListener("click", loadProcessing);
   document.getElementById("refreshPostedBtn").addEventListener("click", loadProcessing);
+  document.getElementById("refreshFailedBtn").addEventListener("click", loadArchived);
   document.getElementById("refreshArchivedBtn").addEventListener("click", loadArchived);
 }
 
@@ -1356,7 +1389,7 @@ async function loadAll() {
     if (activeTab === "pending") tasks.push(loadPending());
     if (activeTab === "released" || activeTab === "posted") tasks.push(loadProcessing());
     if (activeTab === "manual-tracking") tasks.push(loadManualTracking());
-    if (activeTab === "archived") tasks.push(loadArchived());
+    if (activeTab === "failed" || activeTab === "archived") tasks.push(loadArchived());
     const [counts] = await Promise.all(tasks);
     renderKpis(counts);
   } catch (error) {
@@ -1424,6 +1457,7 @@ setupSyncNow();
 setupBulkPrint();
 setupManualTracking();
 setupCancelLabelDialog();
+setupArchiveDialog();
 setupStockConfirmDialog();
 setupToolbar();
 setupDiagnose();

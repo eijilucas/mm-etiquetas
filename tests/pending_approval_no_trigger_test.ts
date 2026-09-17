@@ -633,6 +633,55 @@ Deno.test("archives a held order so it drops out of every panel tab", async () =
   assertEquals(order.archived_by, "tester@example.com");
 });
 
+Deno.test("archives a held order with an optional reason, and restore clears it back to null", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push({
+    id: "order-held-reason",
+    store_key: "test",
+    shopify_order_id: "7005",
+    status: "held",
+    held_reason: "CEP invalido",
+    held_at: new Date().toISOString(),
+  });
+
+  const archiveReq = new Request("http://localhost/functions/v1/orders-api/order-held-reason/archive", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ reason: "Cliente cancelou a compra" }),
+  });
+  // deno-lint-ignore no-explicit-any
+  const archiveRes = await handleOrdersApi(archiveReq, { config, supabase: fake as any });
+  assertEquals(archiveRes.status, 200);
+  assertEquals(fake.table("orders_shipping")[0].archive_reason, "Cliente cancelou a compra");
+
+  const restoreReq = new Request("http://localhost/functions/v1/orders-api/order-held-reason/restore", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+  });
+  // deno-lint-ignore no-explicit-any
+  await handleOrdersApi(restoreReq, { config, supabase: fake as any });
+  assertEquals(fake.table("orders_shipping")[0].archive_reason, null);
+});
+
+Deno.test("archives without a reason when none is given (optional field)", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push({
+    id: "order-no-reason",
+    store_key: "test",
+    shopify_order_id: "7006",
+    status: "failed",
+  });
+
+  const req = new Request("http://localhost/functions/v1/orders-api/order-no-reason/archive", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}` },
+  });
+  // deno-lint-ignore no-explicit-any
+  const res = await handleOrdersApi(req, { config, supabase: fake as any });
+  assertEquals(res.status, 200);
+  assertEquals(fake.table("orders_shipping")[0].archive_reason, null);
+});
+
 Deno.test("archives a failed order resolved entirely by hand outside the system", async () => {
   const fake = makeFakeSupabase();
   fake.table("orders_shipping").push({

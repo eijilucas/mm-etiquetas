@@ -53,6 +53,7 @@ export interface OrderShippingRow {
   posted_by: string | null;
   archived_at: string | null;
   archived_by: string | null;
+  archive_reason: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -106,6 +107,7 @@ export interface OrderShippingApiShape {
   postedBy: string | null;
   archivedAt: string | null;
   archivedBy: string | null;
+  archiveReason: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -149,6 +151,7 @@ export function toApiShape(row: OrderShippingRow): OrderShippingApiShape {
     postedBy: row.posted_by,
     archivedAt: row.archived_at,
     archivedBy: row.archived_by,
+    archiveReason: row.archive_reason,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

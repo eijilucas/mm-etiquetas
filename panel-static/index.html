@@ -61,7 +61,8 @@
       <button class="tab-btn" data-tab="released">Liberados</button>
       <button class="tab-btn" data-tab="manual-tracking">Rastreio</button>
       <button class="tab-btn" data-tab="posted">Postados</button>
-      <button class="tab-btn" data-tab="archived">Pedidos com erros / removidos</button>
+      <button class="tab-btn" data-tab="failed">Erros</button>
+      <button class="tab-btn" data-tab="archived">Removidos</button>
     </div>
 
     <section class="tab-panel active" id="tab-pending">
@@ -192,6 +193,33 @@
       </div>
     </section>
 
+    <section class="tab-panel" id="tab-failed">
+      <div class="card">
+        <div class="toolbar">
+          <button class="btn" id="refreshFailedBtn">Atualizar</button>
+          <input type="text" class="text-input" id="failedSearch" placeholder="Buscar por numero do pedido ou cliente" style="margin-left: auto;" />
+        </div>
+        <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Pedido</th>
+              <th>Loja</th>
+              <th>Cliente</th>
+              <th class="col-items">Itens</th>
+              <th>Situacao</th>
+              <th>Motivo / erro</th>
+              <th class="nowrap">Quando</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="failedTableBody"></tbody>
+        </table>
+        </div>
+        <div class="empty-state" id="failedEmpty" style="display:none;">Nenhum pedido com erro.</div>
+      </div>
+    </section>
+
     <section class="tab-panel" id="tab-archived">
       <div class="card">
         <div class="toolbar">
@@ -206,9 +234,8 @@
               <th>Loja</th>
               <th>Cliente</th>
               <th class="col-items">Itens</th>
-              <th>Situacao</th>
-              <th>Motivo / erro</th>
-              <th class="nowrap">Quando</th>
+              <th>Motivo</th>
+              <th class="nowrap">Removido em</th>
               <th>Removido por</th>
               <th></th>
             </tr>
@@ -216,7 +243,7 @@
           <tbody id="archivedTableBody"></tbody>
         </table>
         </div>
-        <div class="empty-state" id="archivedEmpty" style="display:none;">Nenhum pedido com erro ou removido.</div>
+        <div class="empty-state" id="archivedEmpty" style="display:none;">Nenhum pedido removido.</div>
       </div>
     </section>
   </main>
@@ -252,6 +279,16 @@
     <div class="dialog-actions">
       <button class="btn" id="cancelLabelCloseBtn">Fechar</button>
       <button class="btn danger" id="cancelLabelConfirmBtn">Cancelar etiqueta</button>
+    </div>
+  </dialog>
+
+  <dialog id="archiveDialog">
+    <label for="archiveReasonInput">Motivo (opcional)</label>
+    <textarea id="archiveReasonInput" rows="3" placeholder="Ex: pedido duplicado, cliente desistiu da compra"></textarea>
+    <p class="dialog-hint">Remove o pedido do painel. O historico continua salvo no banco. Nao cancela etiqueta nem estorna nada.</p>
+    <div class="dialog-actions">
+      <button class="btn" id="archiveCloseBtn">Fechar</button>
+      <button class="btn danger" id="archiveConfirmBtn">Remover</button>
     </div>
   </dialog>
 
