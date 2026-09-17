@@ -13,6 +13,7 @@ const STATUS_LABELS = {
 const STORE_LABELS = {
   basico: "Drop Básico",
   exclusivos: "Exclusivos",
+  external: "Externos",
 };
 
 function storeLabel(storeKey) {
@@ -716,6 +717,7 @@ async function loadProcessing() {
 }
 
 let archivedOrders = [];
+let failedStoreFilter = "all";
 
 // Uma busca só (/archived já traz failed + held + archived juntos) alimenta
 // as duas abas — "Erros" (failed/held) e "Removidos" (archived) — que
@@ -723,9 +725,45 @@ let archivedOrders = [];
 async function loadArchived() {
   const { orders } = await api("/archived");
   archivedOrders = orders;
+  const failedAndHeld = archivedOrders.filter((order) => order.status === "failed" || order.status === "held");
+  if (failedStoreFilter !== "all" && !failedAndHeld.some((order) => order.storeKey === failedStoreFilter)) {
+    failedStoreFilter = "all";
+  }
+  renderFailedStoreFilter();
   renderFailedRows();
   renderRemovedRows();
   return orders;
+}
+
+function renderFailedStoreFilter() {
+  const container = document.getElementById("failedStoreFilter");
+  const failedAndHeld = archivedOrders.filter((order) => order.status === "failed" || order.status === "held");
+  const keys = Array.from(new Set(failedAndHeld.map((order) => order.storeKey))).sort((a, b) =>
+    storeLabel(a).localeCompare(storeLabel(b)),
+  );
+
+  if (keys.length === 0) {
+    container.innerHTML = "";
+    return;
+  }
+
+  const countFor = (key) =>
+    key === "all" ? failedAndHeld.length : failedAndHeld.filter((order) => order.storeKey === key).length;
+
+  container.innerHTML = [{ key: "all", label: "Todos" }, ...keys.map((key) => ({ key, label: storeLabel(key) }))]
+    .map(
+      ({ key, label }) =>
+        `<button class="store-filter-btn${failedStoreFilter === key ? " active" : ""}" data-store="${key}">${label} (${countFor(key)})</button>`,
+    )
+    .join("");
+
+  container.querySelectorAll(".store-filter-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      failedStoreFilter = btn.dataset.store;
+      renderFailedStoreFilter();
+      renderFailedRows();
+    });
+  });
 }
 
 // Aba "Erros": pedido "failed" (deu erro de verdade) ou "held" (em espera,
@@ -736,7 +774,9 @@ function renderFailedRows() {
   const tbody = document.getElementById("failedTableBody");
   const empty = document.getElementById("failedEmpty");
   const failedAndHeld = archivedOrders.filter((order) => order.status === "failed" || order.status === "held");
-  const orders = filterBySearch(failedAndHeld, "failedSearch");
+  const storeFiltered =
+    failedStoreFilter === "all" ? failedAndHeld : failedAndHeld.filter((order) => order.storeKey === failedStoreFilter);
+  const orders = filterBySearch(storeFiltered, "failedSearch");
   tbody.innerHTML = "";
   empty.style.display = orders.length === 0 ? "block" : "none";
 
