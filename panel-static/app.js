@@ -718,6 +718,7 @@ async function loadProcessing() {
 
 let archivedOrders = [];
 let failedStoreFilter = "all";
+let removedStoreFilter = "all";
 
 // Uma busca só (/archived já traz failed + held + archived juntos) alimenta
 // as duas abas — "Erros" (failed/held) e "Removidos" (archived) — que
@@ -729,8 +730,13 @@ async function loadArchived() {
   if (failedStoreFilter !== "all" && !failedAndHeld.some((order) => order.storeKey === failedStoreFilter)) {
     failedStoreFilter = "all";
   }
+  const removed = archivedOrders.filter((order) => order.status === "archived");
+  if (removedStoreFilter !== "all" && !removed.some((order) => order.storeKey === removedStoreFilter)) {
+    removedStoreFilter = "all";
+  }
   renderFailedStoreFilter();
   renderFailedRows();
+  renderRemovedStoreFilter();
   renderRemovedRows();
   return orders;
 }
@@ -870,13 +876,45 @@ function renderFailedRows() {
   });
 }
 
+function renderRemovedStoreFilter() {
+  const container = document.getElementById("archivedStoreFilter");
+  const removed = archivedOrders.filter((order) => order.status === "archived");
+  const keys = Array.from(new Set(removed.map((order) => order.storeKey))).sort((a, b) =>
+    storeLabel(a).localeCompare(storeLabel(b)),
+  );
+
+  if (keys.length === 0) {
+    container.innerHTML = "";
+    return;
+  }
+
+  const countFor = (key) => (key === "all" ? removed.length : removed.filter((order) => order.storeKey === key).length);
+
+  container.innerHTML = [{ key: "all", label: "Todos" }, ...keys.map((key) => ({ key, label: storeLabel(key) }))]
+    .map(
+      ({ key, label }) =>
+        `<button class="store-filter-btn${removedStoreFilter === key ? " active" : ""}" data-store="${key}">${label} (${countFor(key)})</button>`,
+    )
+    .join("");
+
+  container.querySelectorAll(".store-filter-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      removedStoreFilter = btn.dataset.store;
+      renderRemovedStoreFilter();
+      renderRemovedRows();
+    });
+  });
+}
+
 // Aba "Removidos": só pedido "archived" (removido via botão Remover). Ação:
 // restaurar.
 function renderRemovedRows() {
   const tbody = document.getElementById("archivedTableBody");
   const empty = document.getElementById("archivedEmpty");
   const removed = archivedOrders.filter((order) => order.status === "archived");
-  const orders = filterBySearch(removed, "archivedSearch");
+  const storeFiltered =
+    removedStoreFilter === "all" ? removed : removed.filter((order) => order.storeKey === removedStoreFilter);
+  const orders = filterBySearch(storeFiltered, "archivedSearch");
   tbody.innerHTML = "";
   empty.style.display = orders.length === 0 ? "block" : "none";
 
