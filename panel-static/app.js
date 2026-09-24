@@ -255,12 +255,51 @@ function renderPendingStoreFilter() {
   });
 }
 
-function pendingRowHtml(order) {
+// CEP normalizado do pedido (só dígitos), ou null se não tiver -- usado pra
+// achar pedidos pendentes que provavelmente vao pro mesmo destinatario.
+function pendingOrderZip(order) {
+  const zip = order.shippingAddress?.zip;
+  if (typeof zip !== "string") return null;
+  const digits = zip.replace(/\D/g, "");
+  return digits.length >= 8 ? digits : null;
+}
+
+// Dois ou mais pedidos pendentes com o mesmo CEP provavelmente sao do mesmo
+// cliente comprando em pedidos separados -- se cada um virar uma etiqueta
+// e so uma for usada (tudo mandado numa caixa so), a outra fica paga e
+// perdida (foi exatamente o que aconteceu com #3468/#3469 e VE-110/VE-112,
+// 2026-09-23). So um aviso, nao bloqueia aprovar separado quando for
+// realmente o caso.
+function findPendingDuplicateGroups(orders) {
+  const byZip = new Map();
+  for (const order of orders) {
+    const zip = pendingOrderZip(order);
+    if (!zip) continue;
+    if (!byZip.has(zip)) byZip.set(zip, []);
+    byZip.get(zip).push(order);
+  }
+  const duplicateOrderIds = new Map();
+  for (const group of byZip.values()) {
+    if (group.length < 2) continue;
+    for (const order of group) {
+      duplicateOrderIds.set(
+        order.id,
+        group.filter((o) => o.id !== order.id).map((o) => orderRef(o)),
+      );
+    }
+  }
+  return duplicateOrderIds;
+}
+
+function pendingRowHtml(order, duplicateRefs) {
+  const duplicateBadge = duplicateRefs
+    ? `<br/><span class="duplicate-warning" title="Mesmo CEP de: ${escapeAttr(duplicateRefs.join(", "))}">⚠ Mesmo CEP de ${escapeAttr(duplicateRefs.join(", "))} — confere se pode mandar junto</span>`
+    : "";
   return `
     <td><input type="checkbox" data-id="${order.id}" ${selectedPending.has(order.id) ? "checked" : ""} /></td>
     <td>${orderRefHtml(order)}</td>
     <td>${storeCell(order)}</td>
-    <td>${order.customerName ?? "-"}<br/><span class="items-list">${order.customerEmail ?? ""}</span></td>
+    <td>${order.customerName ?? "-"}<br/><span class="items-list">${order.customerEmail ?? ""}</span>${duplicateBadge}</td>
     <td class="items-list">${itemsSummary(order.items)}</td>
     <td>${formatCurrency(order.totalPrice, order.currency)}</td>
     <td>${formatDate(order.paidAt)}</td>
@@ -301,6 +340,11 @@ function renderPendingRows() {
     groups.get(order.dropId).orders.push(order);
   }
 
+  // Comparado contra TODOS os pendentes (nao so o que passou no filtro de
+  // loja/busca) -- um pedido Shopify e um externo do mesmo cliente ainda
+  // contam como duplicata em potencial mesmo em abas/lojas diferentes.
+  const duplicateOrderIds = findPendingDuplicateGroups(pendingOrders);
+
   const renderedGroups = new Set();
 
   for (const order of visible) {
@@ -326,7 +370,7 @@ function renderPendingRows() {
         for (const groupOrder of group.orders) {
           const tr = document.createElement("tr");
           tr.className = "grouped-row";
-          tr.innerHTML = pendingRowHtml(groupOrder);
+          tr.innerHTML = pendingRowHtml(groupOrder, duplicateOrderIds.get(groupOrder.id));
           tbody.appendChild(tr);
         }
       }
@@ -334,7 +378,7 @@ function renderPendingRows() {
     }
 
     const tr = document.createElement("tr");
-    tr.innerHTML = pendingRowHtml(order);
+    tr.innerHTML = pendingRowHtml(order, duplicateOrderIds.get(order.id));
     tbody.appendChild(tr);
   }
 
@@ -871,6 +915,23 @@ function renderFailedRows() {
     btn.addEventListener("click", () => {
       archiveTargetId = btn.dataset.archiveErr;
       document.getElementById("archiveReasonInput").value = "";
+
+      // Etiqueta paga e ainda nao usada fica facil de esquecer quando o
+      // pedido so e removido do painel (#3434, #3378, #3469, VE-112,
+      // 2026-09-23) -- avisa e oferece cancelar na Melhor Envio.
+      const order = archivedOrders.find((o) => o.id === archiveTargetId);
+      const warningBox = document.getElementById("archivePaidLabelWarning");
+      const checkbox = document.getElementById("archiveCancelLabelCheckbox");
+      checkbox.checked = false;
+      if (order?.melhorEnvioOrderId) {
+        const priceText = order.shippingPrice != null ? formatCurrency(order.shippingPrice, "BRL") : "valor desconhecido";
+        warningBox.querySelector("p").textContent =
+          `⚠ Esse pedido tem uma etiqueta paga na Melhor Envio (${priceText}) que ainda não foi postada.`;
+        warningBox.style.display = "block";
+      } else {
+        warningBox.style.display = "none";
+      }
+
       document.getElementById("archiveDialog").showModal();
     });
   });
@@ -1311,11 +1372,16 @@ function setupArchiveDialog() {
   document.getElementById("archiveCloseBtn").addEventListener("click", () => dialog.close());
   document.getElementById("archiveConfirmBtn").addEventListener("click", async () => {
     const reason = document.getElementById("archiveReasonInput").value.trim();
+    const cancelMelhorEnvioLabel = document.getElementById("archiveCancelLabelCheckbox").checked;
     try {
-      await api(`/${archiveTargetId}/archive`, { method: "POST", body: JSON.stringify({ reason }) });
+      const result = await api(`/${archiveTargetId}/archive`, {
+        method: "POST",
+        body: JSON.stringify({ reason, cancelMelhorEnvioLabel }),
+      });
       dialog.close();
       await loadArchived();
       await refreshKpis();
+      if (result?.warning) await showAlert(result.warning);
     } catch (error) {
       await showAlert(`Erro ao remover: ${friendlyErrorMessage(error.message)}`);
     }

@@ -5,7 +5,7 @@ import { createServiceClient, toApiShape, upsertExternalCandidate } from "../_sh
 import type { OrderShippingRow, ShippingStatus } from "../_shared/db.ts";
 import { runShippingPipeline, cancelOrderLabel, manualTrackingSync, checkApprovalIssues } from "../_shared/pipeline.ts";
 import { runReconciliation, checkStuckOrders, syncPostedOrders, retryStalledTracking } from "../_shared/reconciliation.ts";
-import { fetchAccountBalance, fetchDeclarationPdfUrl, fetchTrackingBatch } from "../_shared/melhorenvio.ts";
+import { fetchAccountBalance, fetchDeclarationPdfUrl, fetchTrackingBatch, cancelLabel } from "../_shared/melhorenvio.ts";
 import { fetchPaidFulfilledOrders, fetchOrderByNumber, mapShopifyOrderToCandidate, latestFulfillmentTracking } from "../_shared/shopify.ts";
 import { getStoreByKey } from "../_shared/config.ts";
 import { reportExternalStageChangeForIds } from "../_shared/integrationCallback.ts";
@@ -528,20 +528,41 @@ export async function handleOrdersApi(req: Request, deps: Deps = {}): Promise<Re
         return json({ error: `cannot archive order in status ${order.status}` }, 400);
       }
       const rawBody = await req.text();
-      const reason = rawBody ? (() => {
+      let reason: string | null = null;
+      let cancelMelhorEnvioLabel = false;
+      if (rawBody) {
         try {
           const parsed = JSON.parse(rawBody);
-          return typeof parsed?.reason === "string" && parsed.reason.trim() ? parsed.reason.trim() : null;
+          if (typeof parsed?.reason === "string" && parsed.reason.trim()) reason = parsed.reason.trim();
+          cancelMelhorEnvioLabel = parsed?.cancelMelhorEnvioLabel === true;
         } catch {
-          return null;
+          // ignore malformed body, same as before
         }
-      })() : null;
+      }
+
+      // Removing an order never used to touch its Melhor Envio label -- but
+      // real cases (2026-09-23: #3434, #3378, #3469, VE-112) showed a paid,
+      // never-posted label just gets forgotten and the money stays lost.
+      // Opt-in only (checkbox in the panel's Remover dialog): this cancels
+      // the label at Melhor Envio WITHOUT crediting stock back via estoque
+      // (unlike cancelOrderLabel/"Cancelar"), because the common real case is
+      // the item already shipped for real, just under a different label.
+      let cancelWarning: string | null = null;
+      if (cancelMelhorEnvioLabel && order.melhor_envio_order_id) {
+        try {
+          await cancelLabel(config, [order.melhor_envio_order_id], reason ?? "Pedido removido do painel — etiqueta não usada");
+        } catch (cancelError) {
+          cancelWarning = `Pedido removido, mas não foi possível cancelar a etiqueta na Melhor Envio: ${String(cancelError)}`;
+          console.log(JSON.stringify({ level: "warn", orderShippingId: id, err: String(cancelError), msg: "archive_cancel_label_failed" }));
+        }
+      }
+
       const { error } = await supabase
         .from("orders_shipping")
         .update({ status: "archived", archived_at: new Date().toISOString(), archived_by: user.email, archive_reason: reason })
         .eq("id", id);
       if (error) throw error;
-      return json({ ok: true });
+      return json({ ok: true, warning: cancelWarning });
     }
 
     // Undo an /archive. There's no stored "status before archiving" column

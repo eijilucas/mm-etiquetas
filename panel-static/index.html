@@ -287,7 +287,14 @@
   <dialog id="archiveDialog">
     <label for="archiveReasonInput">Motivo (opcional)</label>
     <textarea id="archiveReasonInput" rows="3" placeholder="Ex: pedido duplicado, cliente desistiu da compra"></textarea>
-    <p class="dialog-hint">Remove o pedido do painel. O historico continua salvo no banco. Nao cancela etiqueta nem estorna nada.</p>
+    <p class="dialog-hint">Remove o pedido do painel. O historico continua salvo no banco.</p>
+    <div class="paid-label-warning" id="archivePaidLabelWarning" style="display:none;">
+      <p></p>
+      <label class="checkbox-label">
+        <input type="checkbox" id="archiveCancelLabelCheckbox" />
+        Cancelar essa etiqueta na Melhor Envio agora (não mexe no estoque)
+      </label>
+    </div>
     <div class="dialog-actions">
       <button class="btn" id="archiveCloseBtn">Fechar</button>
       <button class="btn danger" id="archiveConfirmBtn">Remover</button>

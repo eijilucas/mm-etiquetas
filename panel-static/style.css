@@ -414,6 +414,13 @@ tbody tr:hover {
   font-size: 12px;
 }
 
+.duplicate-warning {
+  color: #f0a500;
+  font-size: 11px;
+  display: inline-block;
+  max-width: 260px;
+}
+
 /* Action columns (Etiqueta / Enviar rastreio / Reprocessar+Cancelar): all
    buttons the same size (plain .btn) and vertically centered so they line
    up across the row regardless of how tall the error cell gets. */
@@ -486,6 +493,27 @@ dialog .dialog-actions {
   color: var(--text-label);
   font-size: 12px;
   margin-top: -8px;
+}
+
+.paid-label-warning {
+  border: 1px solid #f0a500;
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: rgba(240, 165, 0, 0.1);
+}
+
+.paid-label-warning p {
+  margin: 0 0 8px;
+  color: #f0a500;
+  font-size: 13px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
 }
 
 .stock-confirm-dialog {

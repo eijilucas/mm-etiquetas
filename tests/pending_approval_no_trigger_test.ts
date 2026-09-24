@@ -1042,6 +1042,57 @@ Deno.test("archive accepts an 'external' order, and restore sends it back to ext
   assertEquals(fake.table("orders_shipping")[0].status, "external");
 });
 
+// Real production case (2026-09-23): #3434/#3378/#3469/VE-112 each had a
+// paid, never-posted Melhor Envio label that just got forgotten when the
+// order was removed via "Remover". cancelMelhorEnvioLabel:true closes that
+// gap by cancelling the label directly -- must NOT go through
+// cancelOrderLabel (that credits stock back via estoque, wrong here since
+// the common real case is the item already shipped for real, under a
+// different label).
+Deno.test("archive with cancelMelhorEnvioLabel:true cancels the Melhor Envio label without touching estoque", async () => {
+  const fake = makeFakeSupabase();
+  fake.table("orders_shipping").push({
+    id: "order-paid-label",
+    store_key: "basico",
+    shopify_order_id: "3609",
+    status: "failed",
+    melhor_envio_order_id: "a2c8f433-3681-49e0-aa0d-9a9de57148dd",
+  });
+
+  let cancelCalled = false;
+  let estoqueCalled = false;
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.includes("/me/shipment/cancel")) {
+      cancelCalled = true;
+      return new Response(JSON.stringify({ "a2c8f433-3681-49e0-aa0d-9a9de57148dd": { status: "canceled" } }), { status: 200 });
+    }
+    if (url.includes("label-cancelled")) {
+      estoqueCalled = true;
+    }
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    const req = new Request("http://localhost/functions/v1/orders-api/order-paid-label/archive", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${fakeUserJwt("tester@example.com")}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ cancelMelhorEnvioLabel: true }),
+    });
+    // deno-lint-ignore no-explicit-any
+    const res = await handleOrdersApi(req, { config, supabase: fake as any });
+    assertEquals(res.status, 200);
+    assertEquals((await res.json()).warning, null);
+  } finally {
+    globalThis.fetch = original;
+  }
+
+  assertEquals(cancelCalled, true);
+  assertEquals(estoqueCalled, false);
+  assertEquals(fake.table("orders_shipping")[0].status, "archived");
+});
+
 function withShopifyOrderLookupMock(order: unknown | null, fn: () => Promise<void>) {
   const original = globalThis.fetch;
   globalThis.fetch = (async (input: string | URL | Request) => {
