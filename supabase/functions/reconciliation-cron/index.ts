@@ -12,7 +12,7 @@ import {
   backfillExternalShippingPrices,
   backfillLabelCosts,
 } from "../_shared/reconciliation.ts";
-import { fetchOrdersPageRaw } from "../_shared/melhorenvio.ts";
+import { fetchOrdersPageRaw, fetchOrdersSearchRaw } from "../_shared/melhorenvio.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
 export interface Deps {
@@ -74,7 +74,7 @@ const LABEL_COST_BACKFILL_DEFAULT_SINCE = "2026-07-01T00:00:00Z";
 
 async function readJobBody(
   req: Request,
-): Promise<{ job: string; offset: number; since: string; status?: string; page: number }> {
+): Promise<{ job: string; offset: number; since: string; status?: string; page: number; q?: string }> {
   try {
     const body = await req.clone().json();
     const job = typeof body?.job === "string" ? body.job : "reconciliation";
@@ -82,9 +82,25 @@ async function readJobBody(
     const since = typeof body?.since === "string" && body.since ? body.since : LABEL_COST_BACKFILL_DEFAULT_SINCE;
     const status = typeof body?.status === "string" && body.status ? body.status : undefined;
     const page = Number.isInteger(body?.page) && body.page > 0 ? body.page : 1;
-    return { job, offset, since, status, page };
+    const q = typeof body?.q === "string" && body.q ? body.q : undefined;
+    return { job, offset, since, status, page, q };
   } catch {
     return { job: "reconciliation", offset: 0, since: LABEL_COST_BACKFILL_DEFAULT_SINCE, page: 1 };
+  }
+}
+
+// One-off admin tool (2026-09-17): raw passthrough to /me/orders/search?q=
+// for finding manually-purchased orders (no melhor_envio_order_id on file)
+// by recipient name/CEP. Remove this job once the VE-70/80/91/77/71 lookup
+// is done -- see fetchOrdersSearchRaw in melhorenvio.ts.
+async function runSearchJob(config: AppConfig, q: string | undefined): Promise<Response> {
+  if (!q) return new Response(JSON.stringify({ error: "missing_q" }), { status: 400, headers: { "Content-Type": "application/json" } });
+  try {
+    const raw = await fetchOrdersSearchRaw(config, q);
+    return new Response(JSON.stringify({ raw }), { status: 200, headers: { "Content-Type": "application/json" } });
+  } catch (error) {
+    console.log(JSON.stringify({ level: "error", err: String(error), msg: "search_job_failed" }));
+    return new Response(JSON.stringify({ error: "internal_error", detail: String(error) }), { status: 500, headers: { "Content-Type": "application/json" } });
   }
 }
 
@@ -205,7 +221,10 @@ export async function handleReconciliationCron(req: Request, deps: Deps = {}): P
 
   const supabase = deps.supabase ?? createServiceClient(config);
 
-  const { job, offset, since, status, page } = await readJobBody(req);
+  const { job, offset, since, status, page, q } = await readJobBody(req);
+  if (job === "melhorenvio_search") {
+    return runSearchJob(config, q);
+  }
   if (job === "melhorenvio_conciliation") {
     return runConciliationJob(supabase, config);
   }

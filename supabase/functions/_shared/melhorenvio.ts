@@ -369,6 +369,16 @@ export async function fetchOrdersPageRaw(config: AppConfig, params: { status?: s
   return meFetch<unknown>(config, `/me/orders${qs ? `?${qs}` : ""}`, { method: "GET" });
 }
 
+// Raw, unfiltered passthrough to GET /me/orders/search?q= -- one-off admin
+// tool (2026-09-17) for finding orders bought manually outside the system
+// (no melhor_envio_order_id on file), so the only way to locate them is a
+// fuzzy search by recipient name/CEP/whatever `q` matches on. Same
+// "never assume the shape, look at the raw response first" pattern as
+// fetchOrdersPageRaw -- remove once the VE-70/80/91/77/71 lookup is done.
+export async function fetchOrdersSearchRaw(config: AppConfig, q: string): Promise<unknown> {
+  return meFetch<unknown>(config, `/me/orders/search?q=${encodeURIComponent(q)}`, { method: "GET" });
+}
+
 export function buildFromAddress(config: AppConfig): MeAddress {
   const from = config.melhorEnvio.from;
   return {
@@ -564,14 +574,22 @@ export async function fetchTrackingByOrderId(config: AppConfig, orderId: string)
   return entry?.tracking || entry?.melhorenvio_tracking || undefined;
 }
 
-// Service ids that quote fine via /me/shipment/calculate but are rejected by
-// POST /me/cart because they require an `options.agency_id` we never send
-// (this integration has no agency/pickup-point configured for any carrier).
-// Confirmed via GET /me/shipment/services: id 35 ("Standard" / Total Express)
-// has requirements.rules["options.agency_id"] = ["required"], whose failure
-// message is exactly "A agência é obrigatória ao selecionar este serviço" —
-// the error real orders (e.g. #3374) hit when auto-cheapest picked it.
-const SERVICES_REQUIRING_AGENCY = [35];
+// Service ids auto-cheapest must never pick, even when they quote cheapest.
+//
+// id 35 ("Standard" / Total Express): rejected outright by POST /me/cart --
+// GET /me/shipment/services has requirements.rules["options.agency_id"] =
+// ["required"] ("A agência é obrigatória ao selecionar este serviço"), and
+// this integration never sends an agency. Hit by real orders (e.g. #3374).
+//
+// id 34 ("Loggi Ponto"): accepted and charged normally, but the drop-off
+// point the packages are physically taken to -- [PEGAKI] Armarinhos
+// Sant'Angelo, Arujá -- only accepts services [1,2,12,17,22,27,31,33]
+// (its `agency.services` on any shipment tied to it). A Loggi Ponto label
+// can't be scanned in there, so it sits at status "released" forever:
+// #3609 and VE-129 (2026-09-23), the only two 34 shipments ever bought, both
+// auto-picked as cheapest. The ME site never offers 34 because the PEGAKI
+// agency is selected there; the API sends no agency, so its quotes do.
+const EXCLUDED_SERVICE_IDS = [34, 35];
 
 // Calls /me/shipment/calculate with the same from/to/products/volumes and
 // picks the lowest-priced quote (optionally restricted to an allow-list of
@@ -603,7 +621,7 @@ export async function pickCheapestServiceId(
       const price = Number(quote.price);
       if (!Number.isFinite(price) || price <= 0) return false;
       if (allowed.length > 0 && !allowed.includes(quote.id)) return false;
-      if (SERVICES_REQUIRING_AGENCY.includes(quote.id)) return false;
+      if (EXCLUDED_SERVICE_IDS.includes(quote.id)) return false;
       return true;
     });
 

@@ -53,6 +53,24 @@ Deno.test("never auto-selects a service that requires an agency_id, even when it
   );
 });
 
+// Real production failure (#3609, VE-129): service 34 ("Loggi Ponto") quoted
+// cheapest and was bought, but the drop-off point the packages go to doesn't
+// accept it, so both labels were refused at the counter and stuck at
+// "released".
+Deno.test("never auto-selects Loggi Ponto (34), even when it's the cheapest quote", async () => {
+  await withFetchMock(
+    () =>
+      jsonResponse([
+        { id: 34, name: "Loggi Ponto", price: "19.26", company: { id: 14, name: "Loggi" } },
+        { id: 31, name: "Express", price: "21.69", company: { id: 14, name: "Loggi" } },
+      ]),
+    async () => {
+      const serviceId = await pickCheapestServiceId(config, payload, "order-3609");
+      assertEquals(serviceId, 31);
+    },
+  );
+});
+
 Deno.test("still picks the true cheapest quote when no agency-restricted service is present", async () => {
   await withFetchMock(
     () =>
